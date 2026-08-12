@@ -13,12 +13,12 @@ func TestCrtShDeduplicate(t *testing.T) {
 
 	entries := []crtShEntry{
 		{NameValue: "api.example.com"},
-		{NameValue: "api.example.com"},           // exact duplicate → must be dropped
-		{NameValue: "*.api.example.com"},          // wildcard → strip to api.example.com, dup
+		{NameValue: "api.example.com"},                  // exact duplicate → must be dropped
+		{NameValue: "*.api.example.com"},                // wildcard → strip to api.example.com, dup
 		{NameValue: "dev.example.com\nstg.example.com"}, // multi-value newline
-		{NameValue: "UPPER.example.com"},          // case → normalise to lower
-		{NameValue: "unrelated.com"},              // different domain → must be dropped
-		{NameValue: "example.com"},                // exact match of target → keep
+		{NameValue: "UPPER.example.com"},                // case → normalise to lower
+		{NameValue: "unrelated.com"},                    // different domain → must be dropped
+		{NameValue: "example.com"},                      // exact match of target → keep
 	}
 
 	results := c.deduplicate(entries, "example.com")
@@ -57,11 +57,11 @@ func TestAlienVaultDeduplicate(t *testing.T) {
 
 	entries := []otxPassiveDNSEntry{
 		{Hostname: "mail.example.com"},
-		{Hostname: "mail.example.com"},   // duplicate → drop
-		{Hostname: "MAIL.example.com"},   // case variant → normalise and drop
+		{Hostname: "mail.example.com"}, // duplicate → drop
+		{Hostname: "MAIL.example.com"}, // case variant → normalise and drop
 		{Hostname: "vpn.example.com"},
-		{Hostname: "notexample.net"},     // different TLD → drop
-		{Hostname: ""},                   // empty → drop
+		{Hostname: "notexample.net"}, // different TLD → drop
+		{Hostname: ""},               // empty → drop
 	}
 
 	results := a.deduplicate(entries, "example.com")
