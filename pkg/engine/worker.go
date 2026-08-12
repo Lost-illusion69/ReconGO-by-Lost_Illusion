@@ -3,19 +3,19 @@
 //
 // Architecture (data flow):
 //
-//	                 ┌─────────────┐
-//	                 │  domains in │  (buffered input channel)
-//	                 └──────┬──────┘
-//	                        │  fan-out to N workers
-//	          ┌─────────────┼─────────────┐
-//	          ▼             ▼             ▼
-//	     [worker 0]   [worker 1]  … [worker N-1]
-//	          │             │             │
-//	          └─────────────┼─────────────┘
-//	                        │  gather results
-//	                 ┌──────▼──────┐
-//	                 │  results ch │  (buffered output channel)
-//	                 └─────────────┘
+//	            ┌─────────────┐
+//	            │  domains in │  (buffered input channel)
+//	            └──────┬──────┘
+//	                   │  fan-out to N workers
+//	     ┌─────────────┼─────────────┐
+//	     ▼             ▼             ▼
+//	[worker 0]   [worker 1]  … [worker N-1]
+//	     │             │             │
+//	     └─────────────┼─────────────┘
+//	                   │  gather results
+//	            ┌──────▼──────┐
+//	            │  results ch │  (buffered output channel)
+//	            └─────────────┘
 //
 // Each worker calls every registered Source.Fetch for the domain it
 // receives, emitting one sources.Result per discovered asset.

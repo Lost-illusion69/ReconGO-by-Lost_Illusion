@@ -34,6 +34,15 @@ jobs:
       - name: Verify module graph
         run: go mod verify
 
+      - name: Check gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
       - name: Build all packages
         run: go build ./...
 
