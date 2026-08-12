@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -90,32 +91,9 @@ func buildLogger(verbose bool) *slog.Logger {
 // Adding a new integration is as simple as appending it here.
 func registeredSources() []sources.Source {
 	return []sources.Source{
-		// Placeholder sources included to demonstrate the pipeline.
-		// Replace / extend with real implementations (CrtSH, HackerTarget, etc.)
-		newNoopSource("crtsh"),
-		newNoopSource("hackertarget"),
-		newNoopSource("threatcrowd"),
+		sources.NewCrtSh(),      // Certificate Transparency logs
+		sources.NewAlienVault(), // OTX passive DNS (reliable fallback)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// noopSource — demonstration stub that satisfies the Source interface.
-// Replace with real HTTP-based implementations in pkg/sources/<name>.go.
-// ---------------------------------------------------------------------------
-
-type noopSource struct{ name string }
-
-func newNoopSource(name string) *noopSource { return &noopSource{name: name} }
-
-func (n *noopSource) Name() string { return n.name }
-
-func (n *noopSource) Fetch(domain string) ([]sources.Result, error) {
-	// Real implementations would perform an HTTP call here.
-	// Return a synthetic subdomain so the pipeline is visibly exercised.
-	synthetic := fmt.Sprintf("stub-%s.%s", n.name, domain)
-	return []sources.Result{
-		{Value: synthetic, Source: n.name},
-	}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -173,11 +151,29 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 	// Stage 1: source fetching  →  raw asset strings.
 	resultCh := eng.Run(ctx, domainCh)
 
-	// Stage 2: pipe raw asset values into the DNS resolver.
+	// Stage 2: deduplicate across sources, print each unique discovery, and
+	// pipe into the DNS resolver.
+	//
+	// Both crtsh and alienvault may return overlapping subdomains.  The seen
+	// map ensures each unique FQDN is only resolved once, even when multiple
+	// sources report the same host.  This goroutine is the single owner of
+	// seen so no mutex is needed.
+	var workerSeq atomic.Uint64
 	hostCh := make(chan string, cfg.dnsWorkers)
 	go func() {
 		defer close(hostCh)
+		seen := make(map[string]struct{})
 		for r := range resultCh {
+			if _, dup := seen[r.Value]; dup {
+				log.DebugContext(ctx, "skipping duplicate",
+					slog.String("host", r.Value),
+					slog.String("source", r.Source),
+				)
+				continue
+			}
+			seen[r.Value] = struct{}{}
+			n := workerSeq.Add(1)
+			fmt.Printf("[Worker %d] Discovered: %-45s (source: %s)\n", n, r.Value, r.Source)
 			select {
 			case hostCh <- r.Value:
 			case <-ctx.Done():
