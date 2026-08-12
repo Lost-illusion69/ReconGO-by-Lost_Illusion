@@ -195,7 +195,7 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 			continue
 		}
 		found++
-		fmt.Printf("[+] %-50s %s\n", lr.Host, strings.Join(lr.IPs, ", "))
+		fmt.Printf("[ALIVE] %s -> [%s]\n", lr.Host, strings.Join(lr.IPs, ", "))
 	}
 
 	log.InfoContext(ctx, "scan complete", slog.Int("resolved", found))
