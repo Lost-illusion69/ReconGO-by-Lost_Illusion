@@ -1,0 +1,38 @@
+# golangci-lint v1 configuration
+# Docs: https://golangci-lint.run/usage/configuration/
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck       # check that errors are handled
+    - gosimple       # suggest code simplifications
+    - govet          # go vet checks
+    - ineffassign    # detect ineffectual assignments
+    - staticcheck    # staticcheck suite
+    - unused         # unused code
+    - gofmt          # code is gofmt'd
+    - goimports      # imports are ordered
+    - misspell       # typos in comments/strings
+    - revive         # fast, configurable linter
+
+linters-settings:
+  gofmt:
+    simplify: true
+  revive:
+    rules:
+      - name: exported
+        severity: warning
+      - name: var-naming
+        severity: warning
+
+issues:
+  exclude-rules:
+    # Ignore missing doc comments on test helpers
+    - path: _test\.go
+      linters: [revive]
+  max-issues-per-linter: 50
+  max-same-issues: 10
