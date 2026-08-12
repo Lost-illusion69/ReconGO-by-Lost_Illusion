@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Go Report](https://goreportcard.com/badge/github.com/Lost-illusion69/recongo)](https://goreportcard.com/report/github.com/Lost-illusion69/recongo)
 
-*Part of the [Lost-illusion69](https://github.com/Lost-illusion69) Security Engineering Portfolio — Project #1*
+*Part of the [Lost-illusion69](https://github.com/Lost-illusion69) Security Engineering Toolkit — Project #1*
 
 </div>
 
