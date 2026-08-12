@@ -91,8 +91,10 @@ func buildLogger(verbose bool) *slog.Logger {
 // Adding a new integration is as simple as appending it here.
 func registeredSources() []sources.Source {
 	return []sources.Source{
-		sources.NewCrtSh(),      // Certificate Transparency logs
-		sources.NewAlienVault(), // OTX passive DNS (reliable fallback)
+		sources.NewCrtSh(),        // Certificate Transparency logs
+		sources.NewAlienVault(),   // OTX passive DNS (reliable fallback)
+		sources.NewHackerTarget(), // HackerTarget host search
+		sources.NewWordlist(),     // Local common prefix generator
 	}
 }
 
