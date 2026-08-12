@@ -40,10 +40,14 @@ jobs:
       - name: Run tests with race detector
         run: go test -race -count=1 -timeout 120s ./...
 
-      - name: Check go.sum is tidy
+      - name: Check module is tidy
         run: |
           go mod tidy
-          git diff --exit-code go.sum
+          # go.sum only exists when there are external dependencies.
+          # For a stdlib-only module it is absent; skip the diff in that case.
+          if [ -f go.sum ]; then
+            git diff --exit-code go.sum
+          fi
 
   # ------------------------------------------------------------------
   # 2. Static Analysis / Linting
@@ -66,12 +70,8 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
-          args: >
-            --timeout 5m
-            --enable errcheck,gosimple,govet,ineffassign,staticcheck,unused
-            --enable gofmt,goimports,misspell,revive
-            --exclude-use-default=false
+          version: v1.64.8   # pin to latest stable v1 release
+          args: --timeout 5m --config .golangci.yml
 
   # ------------------------------------------------------------------
   # 3. Docker Image Build (smoke-test the multi-stage Dockerfile)
