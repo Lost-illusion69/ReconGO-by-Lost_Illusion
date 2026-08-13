@@ -18,10 +18,10 @@ const (
 
 // JSFetchOptions controls optional JavaScript bundle mining.
 type JSFetchOptions struct {
-	Enabled   bool
-	MaxFiles  int
-	MaxBytes  int
-	Parallel  int
+	Enabled  bool
+	MaxFiles int
+	MaxBytes int
+	Parallel int
 }
 
 func defaultJSFetchOptions() JSFetchOptions {
