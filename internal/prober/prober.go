@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -37,11 +38,18 @@ func Probe(host string, opts Options) (*models.Result, error) {
 	jsOpts := defaultJSFetchOptions()
 	ctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
 	defer cancel()
-	jsBodies := fetchJSBodies(ctx, client, baseURL.String(), string(body), jsOpts)
+	pageHTML := string(body)
+	jsURLs := extractJSURLs(pageHTML, baseURL.String())
+	jsBodies := fetchJSBodies(ctx, client, baseURL.String(), pageHTML, jsOpts)
 
-	bodies := []string{string(body)}
+	bodies := []string{pageHTML}
 	bodies = append(bodies, jsBodies...)
 	result.Endpoints = MineEndpoints(bodies...)
+
+	if opts.Verbose {
+		fmt.Fprintf(os.Stderr, "  [js] %s: %d script ref(s), fetched %d bundle(s), mined %d endpoint(s)\n",
+			host, len(jsURLs), len(jsBodies), len(result.Endpoints))
+	}
 
 	if favicon, err := fetchFavicon(client, opts, baseURL, body); err == nil && len(favicon) > 0 {
 		result.FaviconMMH3 = mmh3.FaviconHash(favicon)

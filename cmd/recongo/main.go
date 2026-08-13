@@ -257,6 +257,7 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 		Options: prober.Options{
 			Delay:       cfg.delay,
 			RandomAgent: cfg.randomAgent,
+			Verbose:     cfg.verbose,
 			Headers:     probeHeaders,
 			ProxyURL:    cfg.proxy,
 		},

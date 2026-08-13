@@ -23,6 +23,7 @@ type Options struct {
 	Timeout     time.Duration
 	Delay       time.Duration
 	RandomAgent bool
+	Verbose     bool
 	Headers     map[string]string
 	ProxyURL    string
 }
