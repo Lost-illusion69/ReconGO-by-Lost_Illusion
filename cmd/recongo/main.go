@@ -22,6 +22,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Lost-illusion69/recongo/internal/clustering"
+	"github.com/Lost-illusion69/recongo/internal/mutator"
 	"github.com/Lost-illusion69/recongo/pkg/dns"
 	"github.com/Lost-illusion69/recongo/pkg/engine"
 	"github.com/Lost-illusion69/recongo/pkg/output"
@@ -53,6 +55,8 @@ type config struct {
 	format       string
 	httpTimeout  time.Duration
 	probeWorkers int
+	mutate       bool
+	maxMutations int
 }
 
 func parseFlags(args []string) (*config, error) {
@@ -72,6 +76,8 @@ func parseFlags(args []string) (*config, error) {
 	fs.StringVar(&cfg.format, "format", "text", "Output format: text, json, or csv")
 	fs.DurationVar(&cfg.httpTimeout, "http-timeout", 5*time.Second, "Per-host HTTP probe timeout")
 	fs.IntVar(&cfg.probeWorkers, "probe-workers", 50, "Number of concurrent HTTP probe workers")
+	fs.BoolVar(&cfg.mutate, "mutate", true, "Enable pattern-based subdomain mutation")
+	fs.IntVar(&cfg.maxMutations, "max-mutations", 500, "Global cap on emitted mutation candidates")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -185,6 +191,10 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 	// stdout / -o stays clean for piping.
 	var workerSeq atomic.Uint64
 	hostCh := make(chan string, cfg.dnsWorkers)
+	mutatorEng := mutator.New(mutator.Config{
+		MaxMutations: cfg.maxMutations,
+		RootDomain:   cfg.domain,
+	})
 	progressOut := discoveryWriter(format)
 	go func() {
 		defer close(hostCh)
@@ -200,10 +210,15 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 			seen[r.Value] = struct{}{}
 			n := workerSeq.Add(1)
 			fmt.Fprintf(progressOut, "[Worker %d] Discovered: %-45s (source: %s)\n", n, r.Value, r.Source)
+
 			select {
 			case hostCh <- r.Value:
 			case <-ctx.Done():
 				return
+			}
+
+			if cfg.mutate {
+				mutatorEng.Mutate(ctx, r.Value, hostCh)
 			}
 		}
 	}()
@@ -222,15 +237,16 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 	}, log)
 	assetCh := pool.Run(ctx, resolvedCh)
 
-	// Tee results so we can count probed assets while the writer drains.
-	countedCh := make(chan prober.AssetResult, cfg.probeWorkers)
+	clusterer := clustering.New()
+	taggedCh := make(chan prober.AssetResult, cfg.probeWorkers)
 	var found atomic.Int64
 	go func() {
-		defer close(countedCh)
+		defer close(taggedCh)
 		for a := range assetCh {
+			clusterer.Tag(&a)
 			found.Add(1)
 			select {
-			case countedCh <- a:
+			case taggedCh <- a:
 			case <-ctx.Done():
 				return
 			}
@@ -247,12 +263,13 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 	}
 
 	wr := output.NewWriter(format, dest)
-	if err := <-wr.Run(ctx, countedCh); err != nil {
+	if err := <-wr.Run(ctx, taggedCh); err != nil {
 		return fmt.Errorf("output writer: %w", err)
 	}
 
 	log.InfoContext(ctx, "scan complete",
 		slog.Int64("probed", found.Load()),
+		slog.Int64("mutations", mutatorEng.Emitted()),
 		slog.String("format", string(format)),
 	)
 	return nil
@@ -338,6 +355,8 @@ func main() {
 		slog.Int("workers", cfg.workers),
 		slog.Int("dns-workers", cfg.dnsWorkers),
 		slog.Bool("probe", cfg.probe),
+		slog.Bool("mutate", cfg.mutate),
+		slog.Int("max-mutations", cfg.maxMutations),
 		slog.Int("probe-workers", cfg.probeWorkers),
 		slog.String("format", cfg.format),
 	)
