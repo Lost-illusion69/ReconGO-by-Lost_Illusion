@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 func newTransport(opts Options) (*http.Transport, error) {
@@ -15,7 +17,11 @@ func newTransport(opts Options) (*http.Transport, error) {
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true, //nolint:gosec // intentional for recon probing
 		},
-		DisableKeepAlives: true,
+		ForceAttemptHTTP2: true,
+	}
+
+	if err := http2.ConfigureTransport(transport); err != nil {
+		return nil, fmt.Errorf("prober: configure http2: %w", err)
 	}
 
 	proxyURL := strings.TrimSpace(opts.ProxyURL)
@@ -62,7 +68,6 @@ func applyDelay(base time.Duration) {
 	if base <= 0 {
 		return
 	}
-	// Base delay plus uniform jitter in [0, base).
 	jitter := time.Duration(rand.Int64N(int64(base)))
 	time.Sleep(base + jitter)
 }
@@ -70,6 +75,17 @@ func applyDelay(base time.Duration) {
 func applyHeaders(req *http.Request, opts Options) {
 	ua := pickUserAgent(opts.RandomAgent)
 	req.Header.Set("User-Agent", ua)
+
+	// Diagnostic / bypass headers (skipped when caller already set them).
+	setDefault := func(k, v string) {
+		if req.Header.Get(k) == "" {
+			req.Header.Set(k, v)
+		}
+	}
+	setDefault("X-Forwarded-For", "127.0.0.1")
+	setDefault("X-Real-IP", "127.0.0.1")
+	setDefault("X-Debug", "1")
+
 	for k, v := range opts.Headers {
 		req.Header.Set(k, v)
 	}

@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/Lost-illusion69/recongo/internal/origin"
 )
 
 const maxBodyBytes = 1 << 20 // 1 MiB
@@ -20,11 +22,14 @@ var (
 
 // Options configures HTTP probe behaviour (traffic shaping, headers, proxy).
 type Options struct {
-	Timeout     time.Duration
-	Delay       time.Duration
-	RandomAgent bool
-	Headers     map[string]string
-	ProxyURL    string
+	Timeout        time.Duration
+	Delay          time.Duration
+	RandomAgent    bool
+	Verbose        bool
+	FindOrigin     bool
+	OriginFindings *origin.Findings
+	Headers        map[string]string
+	ProxyURL       string
 }
 
 func (o Options) withDefaults() Options {

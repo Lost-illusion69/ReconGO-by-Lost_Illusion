@@ -221,13 +221,29 @@ func (wr *Writer) writeJSON(a prober.AssetResult) error {
 			BodyMMH3:    a.BodyMMH3,
 			ClusterTag:  a.ClusterTag,
 		},
-		Endpoints: a.Endpoints,
+		Endpoints:          a.Endpoints,
+		HistoricalURLs:     a.HistoricalURLs,
+		DiscoveredParams:   a.DiscoveredParams,
+		IsCDNProxied:       a.IsCDNProxied,
+		CDNProvider:        a.CDNProvider,
+		PotentialOriginIPs: a.PotentialOriginIPs,
+		TakeoverRisk:       a.TakeoverRisk,
+		TakeoverCNAME:      a.TakeoverCNAME,
 	}
 	if dto.Asset.IPs == nil {
 		dto.Asset.IPs = []string{}
 	}
 	if dto.Endpoints == nil {
 		dto.Endpoints = []string{}
+	}
+	if dto.HistoricalURLs == nil {
+		dto.HistoricalURLs = []string{}
+	}
+	if dto.DiscoveredParams == nil {
+		dto.DiscoveredParams = []string{}
+	}
+	if dto.PotentialOriginIPs == nil {
+		dto.PotentialOriginIPs = []string{}
 	}
 
 	enc := json.NewEncoder(wr.w)
@@ -240,6 +256,8 @@ func (wr *Writer) writeCSV(a prober.AssetResult) error {
 		if err := wr.csvW.Write([]string{
 			"Host", "IPs", "URL", "StatusCode", "Title", "Server", "ContentLength",
 			"ResponseTime", "FaviconMMH3", "BodyMMH3", "ClusterTag", "Endpoints",
+			"HistoricalURLs", "DiscoveredParams", "IsCDNProxied", "CDNProvider",
+			"PotentialOriginIPs", "TakeoverRisk", "TakeoverCNAME",
 		}); err != nil {
 			return err
 		}
@@ -259,14 +277,28 @@ func (wr *Writer) writeCSV(a prober.AssetResult) error {
 		fmt.Sprintf("%d", a.BodyMMH3),
 		a.ClusterTag,
 		strings.Join(a.Endpoints, ";"),
+		strings.Join(a.HistoricalURLs, ";"),
+		strings.Join(a.DiscoveredParams, ";"),
+		fmt.Sprintf("%t", a.IsCDNProxied),
+		a.CDNProvider,
+		strings.Join(a.PotentialOriginIPs, ";"),
+		fmt.Sprintf("%t", a.TakeoverRisk),
+		a.TakeoverCNAME,
 	})
 }
 
 type jsonResult struct {
-	Asset        assetBlock       `json:"asset"`
-	HTTP         httpBlock        `json:"http"`
-	Fingerprints fingerprintBlock `json:"fingerprints"`
-	Endpoints    []string         `json:"endpoints"`
+	Asset              assetBlock       `json:"asset"`
+	HTTP               httpBlock        `json:"http"`
+	Fingerprints       fingerprintBlock `json:"fingerprints"`
+	Endpoints          []string         `json:"endpoints"`
+	HistoricalURLs     []string         `json:"historical_urls"`
+	DiscoveredParams   []string         `json:"discovered_params"`
+	IsCDNProxied       bool             `json:"is_cdn_proxied"`
+	CDNProvider        string           `json:"cdn_provider,omitempty"`
+	PotentialOriginIPs []string         `json:"potential_origin_ips"`
+	TakeoverRisk       bool             `json:"takeover_risk,omitempty"`
+	TakeoverCNAME      string           `json:"takeover_cname,omitempty"`
 }
 
 type assetBlock struct {
@@ -374,6 +406,46 @@ func renderResultCard(a prober.AssetResult, color bool) string {
 	} else {
 		b.WriteString("│    (none discovered)                                                         │\n")
 	}
+
+	if a.IsCDNProxied || a.CDNProvider != "" || len(a.PotentialOriginIPs) > 0 {
+		b.WriteString("├─ Origin / CDN ───────────────────────────────────────────────────────────────┤\n")
+		if a.IsCDNProxied {
+			b.WriteString(fmt.Sprintf("│    cdn_proxied   %-59t │\n", a.IsCDNProxied))
+		}
+		if a.CDNProvider != "" {
+			b.WriteString(fmt.Sprintf("│    cdn_provider  %-59s │\n", truncate(a.CDNProvider, 59)))
+		}
+		for i, ip := range a.PotentialOriginIPs {
+			if i >= 4 {
+				b.WriteString(fmt.Sprintf("│    … +%d origin candidate(s)                                                  │\n", len(a.PotentialOriginIPs)-4))
+				break
+			}
+			b.WriteString(fmt.Sprintf("│    origin_ip     %-59s │\n", ip))
+		}
+	}
+
+	if len(a.HistoricalURLs) > 0 || len(a.DiscoveredParams) > 0 {
+		b.WriteString("├─ Archive Intel ──────────────────────────────────────────────────────────────┤\n")
+		for i, u := range a.HistoricalURLs {
+			if i >= 6 {
+				b.WriteString(fmt.Sprintf("│    … +%d historical URL(s)                                                    │\n", len(a.HistoricalURLs)-6))
+				break
+			}
+			b.WriteString(fmt.Sprintf("│    url           %-59s │\n", truncate(u, 59)))
+		}
+		for i, p := range a.DiscoveredParams {
+			if i >= 6 {
+				break
+			}
+			b.WriteString(fmt.Sprintf("│    param          %-58s │\n", truncate(p, 58)))
+		}
+	}
+
+	if a.TakeoverRisk {
+		b.WriteString("├─ Takeover ───────────────────────────────────────────────────────────────────┤\n")
+		b.WriteString(fmt.Sprintf("│    RISK          CNAME → %-52s │\n", truncate(a.TakeoverCNAME, 52)))
+	}
+
 	b.WriteString("└──────────────────────────────────────────────────────────────────────────────┘\n\n")
 	if color {
 		b.WriteString(colorReset)
