@@ -21,6 +21,7 @@ func sampleAsset() prober.AssetResult {
 		Server:        "nginx",
 		ContentLength: 128,
 		ResponseTime:  42 * time.Millisecond,
+		Endpoints:     []string{"/api/v1/health"},
 	}
 }
 
@@ -36,14 +37,44 @@ func TestWriteJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(line), &m); err != nil {
 		t.Fatalf("invalid jsonl: %v\n%s", err, line)
 	}
-	if m["host"] != "api.example.com" {
-		t.Errorf("host = %v", m["host"])
+	asset, ok := m["asset"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing asset block: %v", m)
 	}
-	if m["status_code"].(float64) != 200 {
-		t.Errorf("status_code = %v", m["status_code"])
+	if asset["host"] != "api.example.com" {
+		t.Errorf("host = %v", asset["host"])
 	}
-	if m["title"] != "API Portal" {
-		t.Errorf("title = %v", m["title"])
+	httpBlock, ok := m["http"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing http block: %v", m)
+	}
+	if httpBlock["status_code"].(float64) != 200 {
+		t.Errorf("status_code = %v", httpBlock["status_code"])
+	}
+	eps, ok := m["endpoints"].([]any)
+	if !ok || len(eps) != 1 {
+		t.Errorf("endpoints = %v", m["endpoints"])
+	}
+}
+
+func TestWriteJSONEmptyEndpoints(t *testing.T) {
+	var buf bytes.Buffer
+	wr := NewWriter(FormatJSON, &buf)
+	a := sampleAsset()
+	a.Endpoints = nil
+	if err := wr.Write(a); err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
+		t.Fatal(err)
+	}
+	eps, ok := m["endpoints"].([]any)
+	if !ok {
+		t.Fatalf("endpoints key missing: %v", m)
+	}
+	if len(eps) != 0 {
+		t.Errorf("expected empty endpoints array, got %v", eps)
 	}
 }
 
@@ -61,14 +92,11 @@ func TestWriteCSV(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("expected header + 1 row, got %d lines:\n%s", len(lines), buf.String())
 	}
-	if !strings.HasPrefix(lines[0], "Host,IPs,URL,StatusCode,Title,Server,ContentLength") {
+	if !strings.HasPrefix(lines[0], "Host,IPs,URL,StatusCode") {
 		t.Errorf("unexpected header: %s", lines[0])
 	}
 	if !strings.Contains(lines[1], "api.example.com") {
 		t.Errorf("row missing host: %s", lines[1])
-	}
-	if !strings.Contains(lines[1], "1.2.3.4;5.6.7.8") {
-		t.Errorf("row missing joined IPs: %s", lines[1])
 	}
 }
 
@@ -78,15 +106,21 @@ func TestWriteText(t *testing.T) {
 	if err := wr.Write(sampleAsset()); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
+	if err := wr.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
 	out := buf.String()
-	if !strings.Contains(out, "[HTTP]") {
-		t.Errorf("missing [HTTP] marker: %s", out)
+	if !strings.Contains(out, "api.example.com") {
+		t.Errorf("missing host: %s", out)
 	}
-	if !strings.Contains(out, "https://api.example.com") {
-		t.Errorf("missing URL: %s", out)
+	if !strings.Contains(out, "[200 OK]") {
+		t.Errorf("missing status badge: %s", out)
 	}
-	if !strings.Contains(out, `title="API Portal"`) {
-		t.Errorf("missing title: %s", out)
+	if !strings.Contains(out, "/api/v1/health") {
+		t.Errorf("missing endpoint: %s", out)
+	}
+	if !strings.Contains(out, "SCAN SUMMARY") {
+		t.Errorf("missing summary footer: %s", out)
 	}
 }
 

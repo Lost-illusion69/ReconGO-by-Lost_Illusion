@@ -20,7 +20,7 @@ func TestMineEndpoints(t *testing.T) {
 	</script>
 	</html>`)
 
-	got := MineEndpoints(body)
+	got := MineEndpoints(string(body))
 	want := map[string]struct{}{
 		"/api/v1/users/list":   {},
 		"/graphql":             {},
@@ -42,7 +42,7 @@ func TestMineEndpoints(t *testing.T) {
 
 func TestMineEndpointsDedup(t *testing.T) {
 	body := []byte(`"/api/v2/foo" "/api/v2/foo" "/graphql"`)
-	got := MineEndpoints(body)
+	got := MineEndpoints(string(body))
 	if len(got) != 2 {
 		t.Errorf("expected 2 unique endpoints, got %v", got)
 	}

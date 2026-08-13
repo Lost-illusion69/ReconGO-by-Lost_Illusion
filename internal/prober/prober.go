@@ -1,6 +1,7 @@
 package prober
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -32,7 +33,16 @@ func Probe(host string, opts Options) (*models.Result, error) {
 	}
 
 	result.BodyMMH3 = mmh3.Hash(body)
-	result.Endpoints = MineEndpoints(body)
+
+	jsOpts := defaultJSFetchOptions()
+	ctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
+	defer cancel()
+	jsBodies := fetchJSBodies(ctx, client, baseURL.String(), string(body), jsOpts)
+
+	bodies := []string{string(body)}
+	bodies = append(bodies, jsBodies...)
+	result.Endpoints = MineEndpoints(bodies...)
+
 	if favicon, err := fetchFavicon(client, opts, baseURL, body); err == nil && len(favicon) > 0 {
 		result.FaviconMMH3 = mmh3.FaviconHash(favicon)
 	}
