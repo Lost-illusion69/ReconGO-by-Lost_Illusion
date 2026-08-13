@@ -5,42 +5,41 @@
 # ==============================================================================
 FROM golang:1.22-alpine AS builder
 
-# Install only the minimum tools required (git for VCS stamping).
 RUN apk add --no-cache git ca-certificates
 
 WORKDIR /build
 
-# Layer-cache the dependency downloads separately from the source copy.
-# This means `go mod download` is re-run only when go.mod / go.sum change.
+# Cache dependency downloads separately from source copies.
 COPY go.mod go.sum* ./
-RUN go mod download && go mod verify
+RUN go mod download
 
-# Copy the entire project and build the binary.
 COPY . .
 
-# CGO_ENABLED=0 produces a fully static binary (no libc dependency).
-# -trimpath removes local file-system paths from the binary for reproducibility.
-# -ldflags strips the debug symbol table and DWARF info to reduce image size.
+ARG VERSION=dev
+
+# Statically linked Linux binary — no CGO, no libc dependency at link time.
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build \
       -trimpath \
-      -ldflags="-s -w -X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" \
+      -ldflags="-s -w -X main.version=${VERSION}" \
       -o /out/recongo \
       ./cmd/recongo
 
 # ==============================================================================
-# Stage 2 — Runtime (scratch for minimal attack surface)
+# Stage 2 — Final Runtime
 # ==============================================================================
-FROM scratch AS runtime
+FROM alpine:latest AS runtime
 
-# Pull in TLS root certificates so HTTPS calls to external APIs work.
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+# TLS root CAs for HTTPS API calls and active HTTP probing.
+RUN apk add --no-cache ca-certificates \
+    && addgroup -S recongo \
+    && adduser -S recongo -G recongo -h /app -s /sbin/nologin
 
-# Drop the binary.
-COPY --from=builder /out/recongo /recongo
+WORKDIR /app
 
-# Run as a non-root uid by setting the user in the image metadata.
-# (scratch has no /etc/passwd so we use numeric UID directly.)
-USER 65534:65534
+COPY --from=builder /out/recongo /app/recongo
 
-ENTRYPOINT ["/recongo"]
+# Drop privileges before executing user-supplied flags.
+USER recongo:recongo
+
+ENTRYPOINT ["/app/recongo"]
