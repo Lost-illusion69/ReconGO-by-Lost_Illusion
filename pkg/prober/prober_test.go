@@ -75,7 +75,7 @@ func TestProbeStatusAndTitle(t *testing.T) {
 
 	host := strings.TrimPrefix(srv.URL, "http://")
 
-	result, err := Probe(host, 3*time.Second)
+	result, err := Probe(host, Options{Timeout: 3 * time.Second})
 	if err != nil {
 		t.Fatalf("Probe() unexpected error: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestProbeForbiddenStatus(t *testing.T) {
 
 	host := strings.TrimPrefix(srv.URL, "http://")
 
-	result, err := Probe(host, 3*time.Second)
+	result, err := Probe(host, Options{Timeout: 3 * time.Second})
 	if err != nil {
 		t.Fatalf("Probe() unexpected error: %v", err)
 	}
@@ -133,14 +133,14 @@ func TestProbeTimeout(t *testing.T) {
 
 	host := strings.TrimPrefix(srv.URL, "http://")
 
-	_, err := Probe(host, 100*time.Millisecond)
+	_, err := Probe(host, Options{Timeout: 100 * time.Millisecond})
 	if err == nil {
 		t.Fatal("Probe() expected timeout error, got nil")
 	}
 }
 
 func TestProbeEmptyHost(t *testing.T) {
-	_, err := Probe("", time.Second)
+	_, err := Probe("", Options{Timeout: time.Second})
 	if err == nil {
 		t.Fatal("Probe(\"\") expected error, got nil")
 	}
@@ -160,7 +160,7 @@ func TestProbeBodyLimit(t *testing.T) {
 
 	host := strings.TrimPrefix(srv.URL, "http://")
 
-	result, err := Probe(host, 5*time.Second)
+	result, err := Probe(host, Options{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("Probe() unexpected error: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestProbeHTTPSServer(t *testing.T) {
 
 	host := strings.TrimPrefix(srv.URL, "https://")
 
-	result, err := Probe(host, 3*time.Second)
+	result, err := Probe(host, Options{Timeout: 3 * time.Second})
 	if err != nil {
 		t.Fatalf("Probe() unexpected error: %v", err)
 	}

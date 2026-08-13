@@ -24,6 +24,9 @@ type ProbeConfig struct {
 	// Defaults to 5 s when zero.
 	Timeout time.Duration
 
+	// Options carries adaptive traffic, header, and proxy settings.
+	Options prober.Options
+
 	// ResultBufferSize is the capacity of the output channel.
 	// Defaults to Workers * 10 when zero.
 	ResultBufferSize int
@@ -97,7 +100,9 @@ func (p *ProbePool) Run(ctx context.Context, resolved <-chan dns.LookupResult) <
 					wg.Done()
 				}()
 
-				result, err := prober.Probe(lookup.Host, p.cfg.Timeout)
+				opts := p.cfg.Options
+				opts.Timeout = p.cfg.Timeout
+				result, err := prober.Probe(lookup.Host, opts)
 				if err != nil {
 					p.log.DebugContext(ctx, "http probe failed",
 						slog.String("host", lookup.Host),

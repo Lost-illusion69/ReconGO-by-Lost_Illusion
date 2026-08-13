@@ -20,7 +20,7 @@ func TestProbeBodyMMH3(t *testing.T) {
 	defer srv.Close()
 
 	host := strings.TrimPrefix(srv.URL, "http://")
-	result, err := Probe(host, 3*time.Second)
+	result, err := Probe(host, Options{Timeout: 3 * time.Second})
 	if err != nil {
 		t.Fatalf("Probe() error: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestProbeFaviconMMH3(t *testing.T) {
 	defer srv.Close()
 
 	host := strings.TrimPrefix(srv.URL, "http://")
-	result, err := Probe(host, 3*time.Second)
+	result, err := Probe(host, Options{Timeout: 3 * time.Second})
 	if err != nil {
 		t.Fatalf("Probe() error: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestProbeFaviconFallbackPath(t *testing.T) {
 	defer srv.Close()
 
 	host := strings.TrimPrefix(srv.URL, "http://")
-	result, err := Probe(host, 3*time.Second)
+	result, err := Probe(host, Options{Timeout: 3 * time.Second})
 	if err != nil {
 		t.Fatalf("Probe() error: %v", err)
 	}
