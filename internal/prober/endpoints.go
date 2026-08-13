@@ -7,62 +7,98 @@ import (
 )
 
 var (
-	apiRouteRe  = regexp.MustCompile(`/api/v[0-9]+/[a-zA-Z0-9_/-]+`)
-	graphqlRe   = regexp.MustCompile(`/graphql`)
-	authRouteRe = regexp.MustCompile(`/auth/[a-zA-Z0-9_/-]+`)
-	jsRefRe     = regexp.MustCompile(`(?is)(?:src|href)=["']([^"']+\.js(?:\?[^"']*)?)["']`)
+	// HTML / inline script src attributes.
+	jsRefRe = regexp.MustCompile(`(?i)(?:src|href)\s*=\s*["']([^"']+\.js[^"']*)["']`)
+
+	// import("...") and from "..." patterns in bundles / HTML.
+	jsImportRe = regexp.MustCompile(`(?i)(?:import\s*\(\s*["']([^"']+)["']|from\s+["']([^"']+)["'])`)
+
+	apiPathRe = regexp.MustCompile(`(?i)(?:["'` + "`" + `]|^|\s)(/(?:api|v[0-9]+|graphql|auth|oauth|rest|services?|internal|public|private|admin|user|users|account|accounts|login|logout|register|token|session|webhook|webhooks|callback|callbacks|health|status|metrics|swagger|docs|openapi)(?:/[a-zA-Z0-9_\-./{}:?&=%]+)?)`)
+
+	// Standalone REST-ish paths often embedded in JS strings.
+	restPathRe = regexp.MustCompile(`(?i)["'` + "`" + `](/[a-zA-Z0-9_\-]+(?:/[a-zA-Z0-9_\-{}]+){1,6})["'` + "`" + `]`)
+
+	graphqlRe = regexp.MustCompile(`(?i)(?:["'` + "`" + `]|^|\s)(/graphql(?:/[a-zA-Z0-9_\-./]+)?)`)
 )
 
-// MineEndpoints extracts API routes from HTML/JS response bodies.
-func MineEndpoints(body []byte) []string {
-	text := string(body)
+// MineEndpoints extracts likely API routes from HTML/JS response bodies.
+func MineEndpoints(bodies ...string) []string {
 	seen := make(map[string]struct{})
-	add := func(route string) {
-		route = strings.TrimSpace(route)
-		if route == "" || len(route) < 2 {
+	var out []string
+
+	add := func(raw string) {
+		p := normalizeEndpointPath(raw)
+		if p == "" {
 			return
 		}
-		if !strings.HasPrefix(route, "/") {
+		if _, ok := seen[p]; ok {
 			return
 		}
-		seen[route] = struct{}{}
+		seen[p] = struct{}{}
+		out = append(out, p)
 	}
 
-	for _, m := range apiRouteRe.FindAllString(text, -1) {
-		add(m)
-	}
-	for _, m := range graphqlRe.FindAllString(text, -1) {
-		add(m)
-	}
-	for _, m := range authRouteRe.FindAllString(text, -1) {
-		add(m)
-	}
-
-	// Also scan quoted paths inside discovered .js references (same-body mining).
-	for _, ref := range jsRefRe.FindAllStringSubmatch(text, -1) {
-		if len(ref) < 2 {
+	for _, body := range bodies {
+		if body == "" {
 			continue
 		}
-		mineFromSnippet(ref[1], add)
+		for _, m := range apiPathRe.FindAllStringSubmatch(body, -1) {
+			if len(m) > 1 {
+				add(m[1])
+			}
+		}
+		for _, m := range graphqlRe.FindAllStringSubmatch(body, -1) {
+			if len(m) > 1 {
+				add(m[1])
+			}
+		}
+		for _, m := range restPathRe.FindAllStringSubmatch(body, -1) {
+			if len(m) > 1 {
+				add(m[1])
+			}
+		}
 	}
-	mineFromSnippet(text, add)
 
-	out := make([]string, 0, len(seen))
-	for r := range seen {
-		out = append(out, r)
-	}
 	sort.Strings(out)
 	return out
 }
 
-func mineFromSnippet(snippet string, add func(string)) {
-	for _, m := range apiRouteRe.FindAllString(snippet, -1) {
-		add(m)
+func normalizeEndpointPath(raw string) string {
+	p := strings.TrimSpace(raw)
+	p = strings.Trim(p, `"'`+"`")
+	p = strings.Split(p, "?")[0]
+	p = strings.Split(p, "#")[0]
+	if !strings.HasPrefix(p, "/") {
+		return ""
 	}
-	for _, m := range graphqlRe.FindAllString(snippet, -1) {
-		add(m)
+	if len(p) < 2 || len(p) > 256 {
+		return ""
 	}
-	for _, m := range authRouteRe.FindAllString(snippet, -1) {
-		add(m)
+	lower := strings.ToLower(p)
+
+	// Skip static assets and obvious non-API paths.
+	staticExt := []string{".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".css", ".woff", ".woff2", ".ttf", ".map", ".webp"}
+	for _, ext := range staticExt {
+		if strings.HasSuffix(lower, ext) {
+			return ""
+		}
 	}
+	if strings.Contains(lower, "/node_modules/") {
+		return ""
+	}
+
+	// Require API-ish signal unless path has enough depth.
+	apiSignals := []string{"/api", "/graphql", "/auth", "/oauth", "/rest", "/service", "/internal", "/webhook", "/swagger", "/openapi", "/v1", "/v2", "/v3", "/login", "/token", "/user", "/admin"}
+	hasSignal := false
+	for _, sig := range apiSignals {
+		if strings.Contains(lower, sig) {
+			hasSignal = true
+			break
+		}
+	}
+	if !hasSignal && strings.Count(p, "/") < 3 {
+		return ""
+	}
+
+	return p
 }

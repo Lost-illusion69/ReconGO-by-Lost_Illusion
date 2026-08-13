@@ -224,7 +224,7 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 			}
 			seen[r.Value] = struct{}{}
 			n := workerSeq.Add(1)
-			fmt.Fprintf(progressOut, "[Worker %d] Discovered: %-45s (source: %s)\n", n, r.Value, r.Source)
+			fmt.Fprintf(progressOut, "  ▸ [%03d] %-48s  %s\n", n, r.Value, formatSource(r.Source))
 
 			select {
 			case hostCh <- r.Value:
@@ -291,6 +291,11 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 	}
 
 	wr := output.NewWriter(format, dest)
+	wr.SetMeta(output.ScanMeta{
+		Domain:    cfg.domain,
+		StartedAt: time.Now(),
+		Workers:   cfg.probeWorkers,
+	})
 	if err := <-wr.Run(ctx, taggedCh); err != nil {
 		return fmt.Errorf("output writer: %w", err)
 	}
@@ -333,6 +338,22 @@ func openOutput(path string) (io.Writer, func() error, error) {
 		return nil, nil, fmt.Errorf("open output file: %w", err)
 	}
 	return f, f.Close, nil
+}
+
+// formatSource returns a compact, aligned source label for discovery lines.
+func formatSource(src string) string {
+	switch strings.ToLower(src) {
+	case "crtsh", "crt.sh":
+		return "crt.sh"
+	case "alienvault", "otx":
+		return "AlienVault OTX"
+	case "hackertarget":
+		return "HackerTarget"
+	case "wordlist":
+		return "Wordlist"
+	default:
+		return src
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -386,6 +407,7 @@ func main() {
 		slog.Duration("delay", cfg.delay),
 		slog.Bool("random-agent", cfg.randomAgent),
 	)
+	fmt.Fprintf(os.Stderr, "\n  ReconGO %s — discovery phase\n  Target: %s\n\n", version, cfg.domain)
 
 	if err := run(ctx, cfg, log); err != nil {
 		log.Error("fatal", slog.String("error", err.Error()))

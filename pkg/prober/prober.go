@@ -35,5 +35,5 @@ func ExtractTitle(body []byte) string {
 
 // MineEndpoints exposes route mining for tests.
 func MineEndpoints(body []byte) []string {
-	return intprober.MineEndpoints(body)
+	return intprober.MineEndpoints(string(body))
 }
