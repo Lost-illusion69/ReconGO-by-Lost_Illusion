@@ -26,6 +26,7 @@
 - [Output Formats](#output-formats)
 - [Defensive & Blue Team Context](#defensive--blue-team-context)
 - [CI / CD](#ci--cd)
+- [Commit Verification](#commit-verification)
 - [License](#license)
 
 ---
@@ -256,6 +257,42 @@ Every push to `main` and every pull request triggers [`.github/workflows/ci.yml`
 | `gofmt -s -l .` | Enforce canonical Go formatting |
 | `go test -v -race ./...` | Full suite under the race detector |
 | `go build -v -o recongo ./cmd/recongo` | Verify release binary compiles |
+
+---
+
+## Commit Verification
+
+GitHub shows three states on commits:
+
+| Badge | Meaning |
+|-------|---------|
+| **Verified** (green) | Commit signature matches a **signing key** on your GitHub account |
+| **Unverified** (yellow) | Commit is signed, but the key is **not registered** on your account |
+| *(no badge)* | Unsigned commit |
+| **Verified** on merge commits | GitHub signs these automatically when you merge a PR via the UI |
+
+Cloud Agent and local commits use SSH signing with your `Lost_illusion` identity. Merge commits look Verified immediately; individual commits stay **Unverified** until you register the signing public key once.
+
+### One-time fix (takes ~30 seconds)
+
+```bash
+./scripts/setup-commit-signing.sh
+```
+
+Copy the printed public key, then:
+
+1. Open [GitHub → SSH keys → New SSH key](https://github.com/settings/ssh/new)
+2. Set **Key type** to **Signing Key** (not Authentication)
+3. Title: `Cursor Cloud Agent (ReconGo)`
+4. Paste the key → **Add SSH key**
+
+All future commits (Cloud Agent and local) will show **Verified**.
+
+Alternatively, if `gh` is logged in as **Lost-illusion69**:
+
+```bash
+gh ssh-key add -t "ReconGo signing" --type signing ~/.ssh/recongo_signing_ed25519.pub
+```
 
 ---
 
