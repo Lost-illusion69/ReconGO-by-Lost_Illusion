@@ -56,6 +56,7 @@ type config struct {
 	httpTimeout  time.Duration
 	probeWorkers int
 	mutate       bool
+	cluster      bool
 	maxMutations int
 }
 
@@ -76,7 +77,8 @@ func parseFlags(args []string) (*config, error) {
 	fs.StringVar(&cfg.format, "format", "text", "Output format: text, json, or csv")
 	fs.DurationVar(&cfg.httpTimeout, "http-timeout", 5*time.Second, "Per-host HTTP probe timeout")
 	fs.IntVar(&cfg.probeWorkers, "probe-workers", 50, "Number of concurrent HTTP probe workers")
-	fs.BoolVar(&cfg.mutate, "mutate", true, "Enable pattern-based subdomain mutation")
+	fs.BoolVar(&cfg.mutate, "mutate", true, "Enable pattern mutation engine for candidate generation")
+	fs.BoolVar(&cfg.cluster, "cluster", true, "Enable favicon and response body MMH3 clustering")
 	fs.IntVar(&cfg.maxMutations, "max-mutations", 500, "Global cap on emitted mutation candidates")
 
 	if err := fs.Parse(args); err != nil {
@@ -243,7 +245,9 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 	go func() {
 		defer close(taggedCh)
 		for a := range assetCh {
-			clusterer.Tag(&a)
+			if cfg.cluster {
+				clusterer.Tag(&a)
+			}
 			found.Add(1)
 			select {
 			case taggedCh <- a:
@@ -356,6 +360,7 @@ func main() {
 		slog.Int("dns-workers", cfg.dnsWorkers),
 		slog.Bool("probe", cfg.probe),
 		slog.Bool("mutate", cfg.mutate),
+		slog.Bool("cluster", cfg.cluster),
 		slog.Int("max-mutations", cfg.maxMutations),
 		slog.Int("probe-workers", cfg.probeWorkers),
 		slog.String("format", cfg.format),
