@@ -53,7 +53,7 @@ func TestExtractTitle(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := extractTitle([]byte(tc.body))
+			got := ExtractTitle([]byte(tc.body))
 			if got != tc.want {
 				t.Errorf("extractTitle() = %q, want %q", got, tc.want)
 			}
