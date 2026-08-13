@@ -3,7 +3,8 @@
 // Usage:
 //
 //	recongo -domain example.com [-workers 50] [-dns-workers 100] [-timeout 5s] \
-//	  [-probe] [-probe-workers 50] [-http-timeout 5s] [-o results.jsonl] [-format json]
+//	  [-probe] [-mutate] [-cluster] [-max-mutations 500] \
+//	  [-probe-workers 50] [-http-timeout 5s] [-o results.jsonl] [-format json]
 //
 // The binary exits with code 0 on success, 1 on usage/config errors,
 // and 2 when terminated by signal.
@@ -77,13 +78,16 @@ func parseFlags(args []string) (*config, error) {
 	fs.StringVar(&cfg.format, "format", "text", "Output format: text, json, or csv")
 	fs.DurationVar(&cfg.httpTimeout, "http-timeout", 5*time.Second, "Per-host HTTP probe timeout")
 	fs.IntVar(&cfg.probeWorkers, "probe-workers", 50, "Number of concurrent HTTP probe workers")
-	fs.BoolVar(&cfg.mutate, "mutate", true, "Enable pattern mutation engine for candidate generation")
-	fs.BoolVar(&cfg.cluster, "cluster", true, "Enable favicon and response body MMH3 clustering")
+	mutateFlag := fs.Bool("mutate", true, "Enable pattern mutation engine for candidate generation")
+	clusterFlag := fs.Bool("cluster", true, "Enable favicon and response body MMH3 clustering")
 	fs.IntVar(&cfg.maxMutations, "max-mutations", 500, "Global cap on emitted mutation candidates")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
+
+	cfg.mutate = *mutateFlag
+	cfg.cluster = *clusterFlag
 
 	return cfg, nil
 }
@@ -327,6 +331,9 @@ func main() {
 	cfg, err := parseFlags(os.Args[1:])
 	if err != nil {
 		// flag.ContinueOnError already printed the error.
+		if strings.Contains(err.Error(), "provided but not defined") {
+			fmt.Fprintln(os.Stderr, "hint: unknown flag — run `git pull origin main` to update ReconGo")
+		}
 		os.Exit(1)
 	}
 
