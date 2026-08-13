@@ -182,8 +182,9 @@ func (wr *Writer) writeText(a prober.AssetResult) error {
 	elapsed := a.ResponseTime.Round(time.Millisecond).String()
 
 	var line string
+	hashInfo := formatHashFields(a)
 	if wr.color {
-		line = fmt.Sprintf("%s[HTTP]%s %s%-3s%s  %s%-8s%s  %s%s%s  %stitle=%q%s  %sserver=%s%s  %sips=[%s]%s  %s(%s)%s\n",
+		line = fmt.Sprintf("%s[HTTP]%s %s%-3s%s  %s%-8s%s  %s%s%s  %stitle=%q%s  %sserver=%s%s  %sips=[%s]%s  %s(%s)%s%s\n",
 			colorGreen, colorReset,
 			colorYellow, status, colorReset,
 			colorDim, elapsed, colorReset,
@@ -192,9 +193,10 @@ func (wr *Writer) writeText(a prober.AssetResult) error {
 			colorDim, server, colorReset,
 			colorDim, ips, colorReset,
 			colorDim, formatBytes(a.ContentLength), colorReset,
+			hashInfo,
 		)
 	} else {
-		line = fmt.Sprintf("[HTTP] %-3d  %-8s  %s  title=%q  server=%s  ips=[%s]  (%s)\n",
+		line = fmt.Sprintf("[HTTP] %-3d  %-8s  %s  title=%q  server=%s  ips=[%s]  (%s)%s\n",
 			a.StatusCode,
 			elapsed,
 			a.URL,
@@ -202,6 +204,7 @@ func (wr *Writer) writeText(a prober.AssetResult) error {
 			server,
 			ips,
 			formatBytes(a.ContentLength),
+			hashInfo,
 		)
 	}
 
@@ -221,6 +224,9 @@ func (wr *Writer) writeJSON(a prober.AssetResult) error {
 		Server        string   `json:"server"`
 		ContentLength int64    `json:"content_length"`
 		ResponseTime  string   `json:"response_time"`
+		FaviconMMH3   int32    `json:"favicon_mmh3,omitempty"`
+		BodyMMH3      int32    `json:"body_mmh3,omitempty"`
+		ClusterTag    string   `json:"cluster_tag,omitempty"`
 	}{
 		Host:          a.Host,
 		IPs:           a.IPs,
@@ -230,6 +236,9 @@ func (wr *Writer) writeJSON(a prober.AssetResult) error {
 		Server:        a.Server,
 		ContentLength: a.ContentLength,
 		ResponseTime:  a.ResponseTime.String(),
+		FaviconMMH3:   a.FaviconMMH3,
+		BodyMMH3:      a.BodyMMH3,
+		ClusterTag:    a.ClusterTag,
 	}
 	if dto.IPs == nil {
 		dto.IPs = []string{}
@@ -244,6 +253,7 @@ func (wr *Writer) writeCSV(a prober.AssetResult) error {
 	if !wr.csvHdr {
 		if err := wr.csvW.Write([]string{
 			"Host", "IPs", "URL", "StatusCode", "Title", "Server", "ContentLength",
+			"FaviconMMH3", "BodyMMH3", "ClusterTag",
 		}); err != nil {
 			return err
 		}
@@ -258,7 +268,27 @@ func (wr *Writer) writeCSV(a prober.AssetResult) error {
 		a.Title,
 		a.Server,
 		fmt.Sprintf("%d", a.ContentLength),
+		fmt.Sprintf("%d", a.FaviconMMH3),
+		fmt.Sprintf("%d", a.BodyMMH3),
+		a.ClusterTag,
 	})
+}
+
+func formatHashFields(a prober.AssetResult) string {
+	parts := make([]string, 0, 3)
+	if a.FaviconMMH3 != 0 {
+		parts = append(parts, fmt.Sprintf(" favicon_mmh3=%d", a.FaviconMMH3))
+	}
+	if a.BodyMMH3 != 0 {
+		parts = append(parts, fmt.Sprintf(" body_mmh3=%d", a.BodyMMH3))
+	}
+	if a.ClusterTag != "" {
+		parts = append(parts, fmt.Sprintf(" cluster=%s", a.ClusterTag))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "")
 }
 
 // ---------------------------------------------------------------------------
