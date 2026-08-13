@@ -59,6 +59,10 @@ type config struct {
 	mutate       bool
 	cluster      bool
 	maxMutations int
+	delay        time.Duration
+	randomAgent  bool
+	headers      string
+	proxy        string
 }
 
 func parseFlags(args []string) (*config, error) {
@@ -81,6 +85,10 @@ func parseFlags(args []string) (*config, error) {
 	mutateFlag := fs.Bool("mutate", true, "Enable pattern mutation engine for candidate generation")
 	clusterFlag := fs.Bool("cluster", true, "Enable favicon and response body MMH3 clustering")
 	fs.IntVar(&cfg.maxMutations, "max-mutations", 500, "Global cap on emitted mutation candidates")
+	fs.DurationVar(&cfg.delay, "delay", 0, "Base per-request delay with jitter (e.g. 100ms, 500ms)")
+	randomAgentFlag := fs.Bool("random-agent", true, "Rotate realistic User-Agent strings per request")
+	fs.StringVar(&cfg.headers, "headers", "", "Comma-separated custom headers (e.g. \"Authorization: Bearer xyz, X-Forwarded-For: 127.0.0.1\")")
+	fs.StringVar(&cfg.proxy, "proxy", "", "HTTP/HTTPS/SOCKS5 proxy URL for probe traffic")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -88,6 +96,7 @@ func parseFlags(args []string) (*config, error) {
 
 	cfg.mutate = *mutateFlag
 	cfg.cluster = *clusterFlag
+	cfg.randomAgent = *randomAgentFlag
 
 	return cfg, nil
 }
@@ -201,7 +210,7 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 		MaxMutations: cfg.maxMutations,
 		RootDomain:   cfg.domain,
 	})
-	progressOut := discoveryWriter(format)
+	progressOut := os.Stderr
 	go func() {
 		defer close(hostCh)
 		seen := make(map[string]struct{})
@@ -233,13 +242,24 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 	resolvedCh := resolver.ResolveAll(ctx, hostCh)
 
 	if !cfg.probe {
-		return drainResolved(ctx, log, resolvedCh, progressOut)
+		return drainResolved(ctx, log, resolvedCh, format)
+	}
+
+	probeHeaders, err := prober.ParseHeaders(cfg.headers)
+	if err != nil {
+		return fmt.Errorf("parse headers: %w", err)
 	}
 
 	// Stage 4: HTTP probe alive hosts.
 	pool := engine.NewProbePool(engine.ProbeConfig{
 		Workers: cfg.probeWorkers,
 		Timeout: cfg.httpTimeout,
+		Options: prober.Options{
+			Delay:       cfg.delay,
+			RandomAgent: cfg.randomAgent,
+			Headers:     probeHeaders,
+			ProxyURL:    cfg.proxy,
+		},
 	}, log)
 	assetCh := pool.Run(ctx, resolvedCh)
 
@@ -283,9 +303,10 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 	return nil
 }
 
-// drainResolved handles the -probe=false path: print alive hosts and exit.
-func drainResolved(ctx context.Context, log *slog.Logger, resolvedCh <-chan dns.LookupResult, out io.Writer) error {
+// drainResolved handles the -probe=false path: print alive hosts to stdout.
+func drainResolved(ctx context.Context, log *slog.Logger, resolvedCh <-chan dns.LookupResult, format output.Format) error {
 	found := 0
+	out := os.Stdout
 	for lr := range resolvedCh {
 		if lr.Err != nil {
 			log.DebugContext(ctx, "dns lookup failed",
@@ -297,20 +318,11 @@ func drainResolved(ctx context.Context, log *slog.Logger, resolvedCh <-chan dns.
 		found++
 		fmt.Fprintf(out, "[ALIVE] %s -> [%s]\n", lr.Host, strings.Join(lr.IPs, ", "))
 	}
-	log.InfoContext(ctx, "scan complete", slog.Int("resolved", found))
+	log.InfoContext(ctx, "scan complete", slog.Int("resolved", found), slog.String("format", string(format)))
 	return nil
 }
 
-// discoveryWriter returns where discovery / alive progress lines should go.
-// Structured formats keep stdout reserved for machine-readable results.
-func discoveryWriter(format output.Format) io.Writer {
-	if format == output.FormatText {
-		return os.Stdout
-	}
-	return os.Stderr
-}
-
-// openOutput returns the destination writer for asset results.  When path is
+// openOutput returns the destination writer for formatted results.
 // empty, results go to stdout.  The closer must be called when non-nil.
 func openOutput(path string) (io.Writer, func() error, error) {
 	if path == "" {
@@ -338,7 +350,7 @@ func main() {
 	}
 
 	if cfg.showVersion {
-		fmt.Printf("recongo %s\n", version)
+		fmt.Fprintf(os.Stderr, "recongo %s\n", version)
 		os.Exit(0)
 	}
 
@@ -371,6 +383,8 @@ func main() {
 		slog.Int("max-mutations", cfg.maxMutations),
 		slog.Int("probe-workers", cfg.probeWorkers),
 		slog.String("format", cfg.format),
+		slog.Duration("delay", cfg.delay),
+		slog.Bool("random-agent", cfg.randomAgent),
 	)
 
 	if err := run(ctx, cfg, log); err != nil {

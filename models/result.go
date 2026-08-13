@@ -16,4 +16,5 @@ type Result struct {
 	FaviconMMH3   int32         `json:"favicon_mmh3,omitempty" csv:"favicon_mmh3"`
 	BodyMMH3      int32         `json:"body_mmh3,omitempty" csv:"body_mmh3"`
 	ClusterTag    string        `json:"cluster_tag,omitempty" csv:"cluster_tag"`
+	Endpoints     []string      `json:"endpoints,omitempty" csv:"endpoints"`
 }

@@ -1,14 +1,9 @@
-// Package prober performs HTTP probing with Shodan-compatible MMH3 fingerprints.
 package prober
 
 import (
-	"context"
-	"crypto/tls"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 
@@ -16,63 +11,44 @@ import (
 	"github.com/Lost-illusion69/recongo/models"
 )
 
-const maxBodyBytes = 1 << 20 // 1 MiB
-
-// MaxBodyBytes is exported for the pkg/prober wrapper.
-const MaxBodyBytes = maxBodyBytes
-
-var (
-	titleRe = regexp.MustCompile(`(?is)<title[^>]*>\s*(.*?)\s*</title>`)
-	iconRe  = regexp.MustCompile(`(?is)<link[^>]+rel=["']?(?:shortcut\s+icon|icon)["']?[^>]+href=["']([^"']+)["']`)
-	iconRe2 = regexp.MustCompile(`(?is)<link[^>]+href=["']([^"']+)["'][^>]+rel=["']?(?:shortcut\s+icon|icon)["']?`)
-)
-
-// Probe attempts HTTPS then HTTP against host, computing body and favicon MMH3 hashes.
-func Probe(host string, timeout time.Duration) (*models.Result, error) {
+// Probe attempts HTTPS then HTTP against host using the supplied options.
+func Probe(host string, opts Options) (*models.Result, error) {
 	if host == "" {
 		return nil, fmt.Errorf("prober: empty host")
 	}
-	if timeout <= 0 {
-		timeout = 5 * time.Second
+
+	opts = opts.withDefaults()
+	client, err := newClient(opts)
+	if err != nil {
+		return nil, err
 	}
 
-	client := newClient(timeout)
-
-	result, baseURL, body, err := doProbe(client, "https", host)
+	result, baseURL, body, err := doProbe(client, opts, "https", host)
 	if err != nil {
-		result, baseURL, body, err = doProbe(client, "http", host)
+		result, baseURL, body, err = doProbe(client, opts, "http", host)
 		if err != nil {
 			return nil, fmt.Errorf("prober: %s: https and http failed: %w", host, err)
 		}
 	}
 
 	result.BodyMMH3 = mmh3.Hash(body)
-	if favicon, err := fetchFavicon(client, baseURL, body); err == nil && len(favicon) > 0 {
+	result.Endpoints = MineEndpoints(body)
+	if favicon, err := fetchFavicon(client, opts, baseURL, body); err == nil && len(favicon) > 0 {
 		result.FaviconMMH3 = mmh3.FaviconHash(favicon)
 	}
 
 	return result, nil
 }
 
-func newClient(timeout time.Duration) *http.Client {
-	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, //nolint:gosec // intentional for recon probing
-			},
-			DisableKeepAlives: true,
-		},
-	}
-}
+func doProbe(client *http.Client, opts Options, scheme, host string) (*models.Result, *url.URL, []byte, error) {
+	applyDelay(opts.Delay)
 
-func doProbe(client *http.Client, scheme, host string) (*models.Result, *url.URL, []byte, error) {
 	rawURL := scheme + "://" + host
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	req.Header.Set("User-Agent", "ReconGo/1.0 (+https://github.com/Lost-illusion69/recongo)")
+	applyHeaders(req, opts)
 
 	start := time.Now()
 	resp, err := client.Do(req)
@@ -81,7 +57,7 @@ func doProbe(client *http.Client, scheme, host string) (*models.Result, *url.URL
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	body, err := readLimitedBody(resp.Body, maxBodyBytes)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("read body: %w", err)
 	}
@@ -98,7 +74,7 @@ func doProbe(client *http.Client, scheme, host string) (*models.Result, *url.URL
 	}, parsed, body, nil
 }
 
-func fetchFavicon(client *http.Client, base *url.URL, body []byte) ([]byte, error) {
+func fetchFavicon(client *http.Client, opts Options, base *url.URL, body []byte) ([]byte, error) {
 	iconPath := findIconHref(body)
 	if iconPath == "" {
 		iconPath = "/favicon.ico"
@@ -109,14 +85,13 @@ func fetchFavicon(client *http.Client, base *url.URL, body []byte) ([]byte, erro
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), client.Timeout)
-	defer cancel()
+	applyDelay(opts.Delay)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, iconURL.String(), nil)
+	req, err := http.NewRequest(http.MethodGet, iconURL.String(), nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "ReconGo/1.0 (+https://github.com/Lost-illusion69/recongo)")
+	applyHeaders(req, opts)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -127,7 +102,7 @@ func fetchFavicon(client *http.Client, base *url.URL, body []byte) ([]byte, erro
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("favicon status %d", resp.StatusCode)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	return readLimitedBody(resp.Body, 256*1024)
 }
 
 func findIconHref(body []byte) string {
@@ -138,13 +113,4 @@ func findIconHref(body []byte) string {
 		return strings.TrimSpace(string(m[1]))
 	}
 	return ""
-}
-
-// ExtractTitle returns the first HTML title in body.
-func ExtractTitle(body []byte) string {
-	m := titleRe.FindSubmatch(body)
-	if m == nil {
-		return ""
-	}
-	return strings.Join(strings.Fields(string(m[1])), " ")
 }

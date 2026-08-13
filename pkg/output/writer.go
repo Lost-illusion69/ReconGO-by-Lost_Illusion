@@ -227,6 +227,7 @@ func (wr *Writer) writeJSON(a prober.AssetResult) error {
 		FaviconMMH3   int32    `json:"favicon_mmh3,omitempty"`
 		BodyMMH3      int32    `json:"body_mmh3,omitempty"`
 		ClusterTag    string   `json:"cluster_tag,omitempty"`
+		Endpoints     []string `json:"endpoints,omitempty"`
 	}{
 		Host:          a.Host,
 		IPs:           a.IPs,
@@ -239,9 +240,13 @@ func (wr *Writer) writeJSON(a prober.AssetResult) error {
 		FaviconMMH3:   a.FaviconMMH3,
 		BodyMMH3:      a.BodyMMH3,
 		ClusterTag:    a.ClusterTag,
+		Endpoints:     a.Endpoints,
 	}
 	if dto.IPs == nil {
 		dto.IPs = []string{}
+	}
+	if dto.Endpoints == nil {
+		dto.Endpoints = []string{}
 	}
 
 	enc := json.NewEncoder(wr.w)
@@ -253,7 +258,7 @@ func (wr *Writer) writeCSV(a prober.AssetResult) error {
 	if !wr.csvHdr {
 		if err := wr.csvW.Write([]string{
 			"Host", "IPs", "URL", "StatusCode", "Title", "Server", "ContentLength",
-			"FaviconMMH3", "BodyMMH3", "ClusterTag",
+			"FaviconMMH3", "BodyMMH3", "ClusterTag", "Endpoints",
 		}); err != nil {
 			return err
 		}
@@ -271,11 +276,12 @@ func (wr *Writer) writeCSV(a prober.AssetResult) error {
 		fmt.Sprintf("%d", a.FaviconMMH3),
 		fmt.Sprintf("%d", a.BodyMMH3),
 		a.ClusterTag,
+		strings.Join(a.Endpoints, ";"),
 	})
 }
 
 func formatHashFields(a prober.AssetResult) string {
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 4)
 	if a.FaviconMMH3 != 0 {
 		parts = append(parts, fmt.Sprintf(" favicon_mmh3=%d", a.FaviconMMH3))
 	}
@@ -284,6 +290,9 @@ func formatHashFields(a prober.AssetResult) string {
 	}
 	if a.ClusterTag != "" {
 		parts = append(parts, fmt.Sprintf(" cluster=%s", a.ClusterTag))
+	}
+	if len(a.Endpoints) > 0 {
+		parts = append(parts, fmt.Sprintf(" endpoints=%d", len(a.Endpoints)))
 	}
 	if len(parts) == 0 {
 		return ""
