@@ -23,8 +23,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Lost-illusion69/recongo/internal/archive"
 	"github.com/Lost-illusion69/recongo/internal/clustering"
 	"github.com/Lost-illusion69/recongo/internal/mutator"
+	"github.com/Lost-illusion69/recongo/internal/notify"
+	"github.com/Lost-illusion69/recongo/internal/origin"
 	"github.com/Lost-illusion69/recongo/pkg/dns"
 	"github.com/Lost-illusion69/recongo/pkg/engine"
 	"github.com/Lost-illusion69/recongo/pkg/output"
@@ -44,25 +47,30 @@ var version = "dev"
 // a plain struct (not a global) and passed by pointer throughout the call
 // chain so each layer only sees what it needs.
 type config struct {
-	domain       string
-	workers      int
-	dnsWorkers   int
-	timeout      time.Duration
-	resolvers    string // comma-separated "host:port" list
-	verbose      bool
-	showVersion  bool
-	probe        bool
-	outputPath   string
-	format       string
-	httpTimeout  time.Duration
-	probeWorkers int
-	mutate       bool
-	cluster      bool
-	maxMutations int
-	delay        time.Duration
-	randomAgent  bool
-	headers      string
-	proxy        string
+	domain         string
+	workers        int
+	dnsWorkers     int
+	timeout        time.Duration
+	resolvers      string // comma-separated "host:port" list
+	verbose        bool
+	showVersion    bool
+	probe          bool
+	outputPath     string
+	format         string
+	httpTimeout    time.Duration
+	probeWorkers   int
+	mutate         bool
+	cluster        bool
+	maxMutations   int
+	delay          time.Duration
+	randomAgent    bool
+	headers        string
+	proxy          string
+	archive        bool
+	findOrigin     bool
+	takeover       bool
+	slackWebhook   string
+	discordWebhook string
 }
 
 func parseFlags(args []string) (*config, error) {
@@ -89,6 +97,11 @@ func parseFlags(args []string) (*config, error) {
 	randomAgentFlag := fs.Bool("random-agent", true, "Rotate realistic User-Agent strings per request")
 	fs.StringVar(&cfg.headers, "headers", "", "Comma-separated custom headers (e.g. \"Authorization: Bearer xyz, X-Forwarded-For: 127.0.0.1\")")
 	fs.StringVar(&cfg.proxy, "proxy", "", "HTTP/HTTPS/SOCKS5 proxy URL for probe traffic")
+	archiveFlag := fs.Bool("archive", true, "Enable historical archive mining (Wayback Machine + OTX)")
+	findOriginFlag := fs.Bool("find-origin", true, "Enable origin IP discovery and CDN bypass correlation")
+	takeoverFlag := fs.Bool("takeover", true, "Enable subdomain takeover CNAME verification")
+	fs.StringVar(&cfg.slackWebhook, "slack-webhook", "", "Slack incoming webhook URL for scan completion alerts")
+	fs.StringVar(&cfg.discordWebhook, "discord-webhook", "", "Discord webhook URL for scan completion alerts")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -97,6 +110,9 @@ func parseFlags(args []string) (*config, error) {
 	cfg.mutate = *mutateFlag
 	cfg.cluster = *clusterFlag
 	cfg.randomAgent = *randomAgentFlag
+	cfg.archive = *archiveFlag
+	cfg.findOrigin = *findOriginFlag
+	cfg.takeover = *takeoverFlag
 
 	return cfg, nil
 }
@@ -146,6 +162,29 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 	format, err := output.ParseFormat(cfg.format)
 	if err != nil {
 		return err
+	}
+
+	var archiveFindings *archive.Findings
+	if cfg.archive {
+		fmt.Fprintf(os.Stderr, "  [archive] querying Wayback Machine + OTX for %s\n", cfg.domain)
+		archiveFindings, err = archive.Query(ctx, cfg.domain, archive.NewClient())
+		if err != nil {
+			log.WarnContext(ctx, "archive mining failed", slog.String("error", err.Error()))
+		} else {
+			fmt.Fprintf(os.Stderr, "  [archive] %d subdomains, %d URLs, %d params\n",
+				len(archiveFindings.Subdomains), len(archiveFindings.HistoricalURLs), len(archiveFindings.DiscoveredParams))
+		}
+	}
+
+	var originFindings *origin.Findings
+	if cfg.findOrigin {
+		fmt.Fprintf(os.Stderr, "  [origin] parsing MX/SPF for %s\n", cfg.domain)
+		originFindings, err = origin.Discover(ctx, cfg.domain, nil)
+		if err != nil {
+			log.WarnContext(ctx, "origin discovery failed", slog.String("error", err.Error()))
+		} else if originFindings != nil {
+			fmt.Fprintf(os.Stderr, "  [origin] %d candidate IP(s) from mail/SPF records\n", len(originFindings.CandidateIPs))
+		}
 	}
 
 	// Build the list of custom nameservers (empty = system default).
@@ -214,6 +253,29 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 	go func() {
 		defer close(hostCh)
 		seen := make(map[string]struct{})
+
+		emit := func(host, source string) {
+			if _, dup := seen[host]; dup {
+				return
+			}
+			seen[host] = struct{}{}
+			n := workerSeq.Add(1)
+			fmt.Fprintf(progressOut, "  ▸ [%03d] %-48s  %s\n", n, host, formatSource(source))
+			select {
+			case hostCh <- host:
+			case <-ctx.Done():
+			}
+		}
+
+		if archiveFindings != nil {
+			for _, sub := range archiveFindings.Subdomains {
+				emit(sub, "archive")
+				if cfg.mutate {
+					mutatorEng.Mutate(ctx, sub, hostCh)
+				}
+			}
+		}
+
 		for r := range resultCh {
 			if _, dup := seen[r.Value]; dup {
 				log.DebugContext(ctx, "skipping duplicate",
@@ -222,15 +284,7 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 				)
 				continue
 			}
-			seen[r.Value] = struct{}{}
-			n := workerSeq.Add(1)
-			fmt.Fprintf(progressOut, "  ▸ [%03d] %-48s  %s\n", n, r.Value, formatSource(r.Source))
-
-			select {
-			case hostCh <- r.Value:
-			case <-ctx.Done():
-				return
-			}
+			emit(r.Value, r.Source)
 
 			if cfg.mutate {
 				mutatorEng.Mutate(ctx, r.Value, hostCh)
@@ -255,10 +309,13 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 		Workers: cfg.probeWorkers,
 		Timeout: cfg.httpTimeout,
 		Options: prober.Options{
-			Delay:       cfg.delay,
-			RandomAgent: cfg.randomAgent,
-			Headers:     probeHeaders,
-			ProxyURL:    cfg.proxy,
+			Delay:          cfg.delay,
+			RandomAgent:    cfg.randomAgent,
+			Verbose:        cfg.verbose,
+			FindOrigin:     cfg.findOrigin,
+			OriginFindings: originFindings,
+			Headers:        probeHeaders,
+			ProxyURL:       cfg.proxy,
 		},
 	}, log)
 	assetCh := pool.Run(ctx, resolvedCh)
@@ -266,13 +323,26 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 	clusterer := clustering.New()
 	taggedCh := make(chan prober.AssetResult, cfg.probeWorkers)
 	var found atomic.Int64
+	var totalEndpoints atomic.Int64
 	go func() {
 		defer close(taggedCh)
 		for a := range assetCh {
+			if archiveFindings != nil {
+				a.HistoricalURLs, a.DiscoveredParams = archive.FilterForHost(archiveFindings, a.Host)
+			}
+			if cfg.takeover {
+				risk, cname := origin.TakeoverRisk(ctx, a.Host, nil)
+				a.TakeoverRisk = risk
+				a.TakeoverCNAME = cname
+				if risk {
+					fmt.Fprintf(os.Stderr, "  [takeover] %-48s  CNAME → %s\n", a.Host, cname)
+				}
+			}
 			if cfg.cluster {
 				clusterer.Tag(&a)
 			}
 			found.Add(1)
+			totalEndpoints.Add(int64(len(a.Endpoints)))
 			select {
 			case taggedCh <- a:
 			case <-ctx.Done():
@@ -305,13 +375,26 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 		slog.Int64("mutations", mutatorEng.Emitted()),
 		slog.String("format", string(format)),
 	)
+
+	summary := notify.Summary{
+		Domain:    cfg.domain,
+		Probed:    found.Load(),
+		Endpoints: int(totalEndpoints.Load()),
+		Mutations: mutatorEng.Emitted(),
+	}
+	if err := notify.SendSlack(ctx, cfg.slackWebhook, summary); err != nil {
+		log.WarnContext(ctx, "slack webhook failed", slog.String("error", err.Error()))
+	}
+	if err := notify.SendDiscord(ctx, cfg.discordWebhook, summary); err != nil {
+		log.WarnContext(ctx, "discord webhook failed", slog.String("error", err.Error()))
+	}
 	return nil
 }
 
 // drainResolved handles the -probe=false path: print alive hosts to stdout.
 func drainResolved(ctx context.Context, log *slog.Logger, resolvedCh <-chan dns.LookupResult, format output.Format) error {
 	found := 0
-	out := os.Stdout
+	out := os.Stderr
 	for lr := range resolvedCh {
 		if lr.Err != nil {
 			log.DebugContext(ctx, "dns lookup failed",
@@ -351,6 +434,8 @@ func formatSource(src string) string {
 		return "HackerTarget"
 	case "wordlist":
 		return "Wordlist"
+	case "archive":
+		return "Archive"
 	default:
 		return src
 	}
@@ -406,6 +491,9 @@ func main() {
 		slog.String("format", cfg.format),
 		slog.Duration("delay", cfg.delay),
 		slog.Bool("random-agent", cfg.randomAgent),
+		slog.Bool("archive", cfg.archive),
+		slog.Bool("find-origin", cfg.findOrigin),
+		slog.Bool("takeover", cfg.takeover),
 	)
 	fmt.Fprintf(os.Stderr, "\n  ReconGO %s — discovery phase\n  Target: %s\n\n", version, cfg.domain)
 

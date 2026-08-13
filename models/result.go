@@ -17,4 +17,17 @@ type Result struct {
 	BodyMMH3      int32         `json:"body_mmh3,omitempty" csv:"body_mmh3"`
 	ClusterTag    string        `json:"cluster_tag,omitempty" csv:"cluster_tag"`
 	Endpoints     []string      `json:"endpoints" csv:"endpoints"`
+
+	// Archive intelligence (Wayback / OTX).
+	HistoricalURLs   []string `json:"historical_urls"`
+	DiscoveredParams []string `json:"discovered_params"`
+
+	// CDN bypass / origin correlation.
+	IsCDNProxied       bool     `json:"is_cdn_proxied"`
+	CDNProvider        string   `json:"cdn_provider,omitempty"`
+	PotentialOriginIPs []string `json:"potential_origin_ips"`
+
+	// Takeover assessment.
+	TakeoverRisk  bool   `json:"takeover_risk,omitempty"`
+	TakeoverCNAME string `json:"takeover_cname,omitempty"`
 }
