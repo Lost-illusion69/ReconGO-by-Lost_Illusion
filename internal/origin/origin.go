@@ -204,12 +204,19 @@ func TakeoverRisk(ctx context.Context, host string, r *net.Resolver) (bool, stri
 		return false, ""
 	}
 	target := strings.ToLower(strings.TrimSuffix(cname, "."))
-	for sink := range cnameSink {
-		if strings.Contains(target, sink) {
-			return true, target
-		}
+	if cnameMatchesSink(target) {
+		return true, target
 	}
 	return false, target
+}
+
+func cnameMatchesSink(target string) bool {
+	for sink := range cnameSink {
+		if strings.Contains(target, sink) {
+			return true
+		}
+	}
+	return false
 }
 
 func looksLikeIP(s string) bool {
