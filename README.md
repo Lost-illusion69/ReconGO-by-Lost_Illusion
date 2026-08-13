@@ -1,15 +1,15 @@
 <div align="center">
 
-# ⚡ ReconGo
+# ReconGo
 
-**Production-grade, concurrent multi-protocol asset reconnaissance engine — written in Go.**
+**High-Performance Concurrent Asset Discovery & Attack-Surface Profiling Engine in Go.**
 
+[![Go Version](https://img.shields.io/badge/go-1.22+-00ADD8?logo=go&logoColor=white)](go.mod)
 [![CI](https://github.com/Lost-illusion69/ReconGO-by-Lost_Illusion/actions/workflows/ci.yml/badge.svg)](https://github.com/Lost-illusion69/ReconGO-by-Lost_Illusion/actions/workflows/ci.yml)
-[![Go Version](https://img.shields.io/badge/go-1.22+-00ADD8?logo=go)](go.mod)
+[![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](Dockerfile)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Go Report](https://goreportcard.com/badge/github.com/Lost-illusion69/recongo)](https://goreportcard.com/report/github.com/Lost-illusion69/recongo)
 
-*Part of the [Lost-illusion69](https://github.com/Lost-illusion69) Security Toolkit — Project #1*
+*A [Lost-illusion69](https://github.com/Lost-illusion69) Security Labs project — built for authorized recon, bug bounty, and red-team workflows.*
 
 </div>
 
@@ -19,234 +19,198 @@
 
 - [Overview](#overview)
 - [Architecture](#architecture)
-- [Features](#features)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Configuration](#configuration)
-- [Adding a New Source](#adding-a-new-source)
-- [Docker](#docker)
-- [CI / CD Pipeline](#ci--cd-pipeline)
-- [Defensive Context (Blue Team)](#-defensive-context-blue-team)
-- [Roadmap](#roadmap)
+- [Key Features](#key-features)
+- [Quickstart & Installation](#quickstart--installation)
+- [CLI Flag Reference](#cli-flag-reference)
+- [Usage Examples](#usage-examples)
+- [Defensive & Blue Team Context](#defensive--blue-team-context)
+- [CI / CD](#ci--cd)
 - [License](#license)
 
 ---
 
 ## Overview
 
-ReconGo is a high-performance CLI utility that concurrently queries multiple subdomain/asset APIs and resolves discovered hosts via DNS — all within a bounded goroutine worker pool designed to prevent memory spikes at scale.
+ReconGo is a production-grade CLI that orchestrates **passive subdomain discovery**, **concurrent DNS resolution**, and **active HTTP probing** through a single, channel-driven pipeline. Every stage is bounded by worker pools and context deadlines — designed to scale without goroutine leaks or memory spikes.
 
-It is built entirely on the **Go standard library** (no heavyweight frameworks) and follows the [Standard Go Project Layout](https://github.com/golang-standards/project-layout).
+Built entirely on the **Go standard library** (zero third-party dependencies), ReconGo ships as a statically linked binary and a hardened multi-stage Docker image.
 
-> **Legal notice:** This tool is intended for authorized security assessments, bug bounty programmes, and penetration tests only. Unauthorized use against systems you do not own or have explicit permission to test is illegal. The author accepts no liability for misuse.
+> **Legal notice:** Use ReconGo only on systems you own or have explicit written permission to assess. Unauthorized scanning is illegal. The authors accept no liability for misuse.
 
 ---
 
 ## Architecture
 
+ReconGo follows a **clean, concurrent pipeline** where each stage owns its channels and hands work to the next via buffered Go channels. Cancellation propagates through `context.Context` from SIGINT/SIGTERM.
+
 ```
-┌──────────────────────────────────────────────────────────┐
-│                      cmd/recongo/main.go                 │
-│  CLI flags → signal context → pipeline orchestration     │
-└────────────────────────┬─────────────────────────────────┘
-                         │  chan string  (domains)
-                         ▼
-┌──────────────────────────────────────────────────────────┐
-│                    pkg/engine/worker.go                  │
-│  Bounded worker pool  (default 50 goroutines)            │
-│  Fans out to every registered Source.Fetch(domain)       │
-└────────────────────────┬─────────────────────────────────┘
-                         │  chan sources.Result  (raw assets)
-                         ▼
-┌──────────────────────────────────────────────────────────┐
-│                    pkg/dns/resolver.go                   │
-│  Concurrent DNS resolver  (default 100 goroutines)       │
-│  A/AAAA lookups with per-lookup context timeout          │
-└────────────────────────┬─────────────────────────────────┘
-                         │  chan dns.LookupResult
-                         ▼
-                     stdout  /  JSON  /  file
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Stage 1 — Passive Source Fetch (pkg/engine)                              │
+│  APIs: crt.sh · AlienVault OTX · HackerTarget · built-in Wordlist           │
+│  Bounded worker pool fans out Source.Fetch(domain) per registered source    │
+└───────────────────────────────────┬─────────────────────────────────────────┘
+                                    │  chan sources.Result
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Stage 2 — Deduplication Goroutine (map owner, single goroutine)          │
+│  In-memory seen{} map · no mutex · emits each unique FQDN exactly once      │
+└───────────────────────────────────┬─────────────────────────────────────────┘
+                                    │  dnsJobs channel
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Stage 3 — Concurrent DNS Worker Pool (pkg/dns, default 100 workers)      │
+│  A/AAAA lookups · per-lookup timeout · custom resolvers supported           │
+└───────────────────────────────────┬─────────────────────────────────────────┘
+                                    │  probeJobs channel (alive hosts only)
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Stage 4 — HTTP Web Prober Pool (pkg/prober, default 50 workers)          │
+│  HTTPS-first · HTTP fallback · TLS skip-verify · <title> extraction         │
+└───────────────────────────────────┬─────────────────────────────────────────┘
+                                    │  results channel
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Stage 5 — Dedicated Writer Goroutine (pkg/output)                        │
+│  Concurrent-safe serialisation → Console · JSON Lines · CSV · file (-o)   │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Data flow is channel-driven and back-pressure-aware** — no goroutine can leak because every stage closes its output channel and respects `ctx.Done()`.
+**Simplified data-flow view:**
+
+```
+[APIs (crt.sh, OTX, HackerTarget) + Wordlist]
+              │
+              ▼
+[Stage 2 Deduplication Goroutine (Map Owner)]
+              │
+              ▼  dnsJobs channel
+[Concurrent DNS Worker Pool (50 workers)]
+              │
+              ▼  probeJobs channel
+[HTTP Web Prober Pool (50 workers)]
+              │
+              ▼
+[Dedicated Writer Goroutine] ──► [JSON / CSV / Console]
+```
+
+Every hand-off is **non-blocking and back-pressure aware** — the pipeline passes `go test -race ./...` with zero data races.
 
 ---
 
-## Features
+## Key Features
 
-| Feature | Detail |
+| Capability | Detail |
 |---|---|
-| **Worker pool** | Bounded by `-workers` flag (default 50); semaphore pattern via `chan struct{}` |
-| **DNS resolver** | Bounded by `-dns-workers` (default 100); per-lookup `context.WithTimeout` |
-| **Custom resolvers** | Pass comma-separated `host:port` nameservers via `-resolvers` |
-| **Source interface** | Single `Fetch(domain) ([]Result, error)` contract — add integrations in minutes |
-| **Graceful shutdown** | `signal.NotifyContext` propagates SIGINT/SIGTERM into every goroutine |
-| **Structured logging** | `log/slog` with text handler; debug level via `-verbose` |
-| **Zero dependencies** | Pure stdlib — no `go.sum` bloat, fast `go install` |
-| **Static binary** | CGO disabled; runs on any Linux/mac/Windows without a runtime |
-| **Multi-stage Docker** | `scratch` final image < 10 MB; non-root UID 65534 |
+| **Non-blocking concurrent pipeline** | Channel-driven stages with bounded semaphores; validated under the Go race detector |
+| **Resilient multi-source fallback** | Four passive sources; per-source failures (HTTP 5xx, 429 rate limits, timeouts) are logged and skipped — remaining sources continue |
+| **Thread-safe deduplication** | A dedicated owner goroutine holds the `seen` map; no mutex contention on the hot path |
+| **HTTP probing** | HTTPS-first with HTTP fallback, `InsecureSkipVerify` for self-signed certs, configurable `-http-timeout`, HTML `<title>` extraction, 1 MiB body cap |
+| **Multi-format exporters** | Plaintext (coloured on TTY), JSON Lines (`-format json`), CSV (`-format csv`), optional file output via `-o` |
+| **Graceful shutdown** | `signal.NotifyContext` cancels in-flight work on SIGINT/SIGTERM |
+| **Zero dependencies** | Pure stdlib — fast builds, minimal supply-chain risk |
+| **Container-ready** | Multi-stage Alpine Dockerfile, non-root `recongo` user, bundled CA certificates |
 
 ---
 
-## Installation
+## Quickstart & Installation
 
-### From source (recommended)
+### Prerequisites
+
+- Go **1.22+** (local builds)
+- Docker (optional, containerised runs)
+
+### Build from source
 
 ```bash
-# Requires Go 1.22+
 git clone https://github.com/Lost-illusion69/ReconGO-by-Lost_Illusion.git
 cd ReconGO-by-Lost_Illusion
 go build -o recongo ./cmd/recongo
 ./recongo -domain example.com
 ```
 
-### go install
-
-```bash
-go install github.com/Lost-illusion69/recongo/cmd/recongo@latest
-```
-
-### Docker
+### Run with Docker
 
 ```bash
 docker build -t recongo .
-docker run --rm recongo -domain example.com
+docker run --rm recongo -domain target.com
+docker run --rm recongo -domain target.com -format json -o /dev/stdout
+```
+
+### Run the test suite (race detector)
+
+```bash
+go test -v -race ./...
 ```
 
 ---
 
-## Usage
+## CLI Flag Reference
 
-```
-recongo -domain <target> [options]
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `-domain` | string | *(required)* | Target root domain to enumerate (e.g. `example.com`) |
+| `-workers` | int | `50` | Number of concurrent source-fetch workers |
+| `-probe` | bool | `true` | Enable active HTTP probing on DNS-alive hosts |
+| `-format` | string | `text` | Output format: `text`, `json`, or `csv` |
+| `-o` | string | *(stdout)* | Write structured results to a file path |
+| `-verbose` | bool | `false` | Enable debug-level structured logging (`log/slog`) |
 
-Flags:
-  -domain      string          Target domain to enumerate (required)
-  -workers     int             Source-fetch concurrency  (default 50)
-  -dns-workers int             DNS resolution concurrency (default 100)
-  -timeout     duration        Per-lookup DNS timeout     (default 5s)
-  -resolvers   string          Comma-separated DNS resolvers
-                               e.g. "8.8.8.8:53,1.1.1.1:53"
-  -verbose                     Enable debug-level logging
-  -version                     Print version and exit
-```
+<details>
+<summary><strong>Advanced flags</strong></summary>
 
-### Examples
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `-dns-workers` | int | `100` | Concurrent DNS resolution workers |
+| `-probe-workers` | int | `50` | Concurrent HTTP probe workers |
+| `-http-timeout` | duration | `5s` | Per-host HTTP probe deadline |
+| `-timeout` | duration | `5s` | Per-lookup DNS timeout |
+| `-resolvers` | string | *(system)* | Comma-separated custom resolvers (`8.8.8.8:53,1.1.1.1:53`) |
+| `-version` | bool | `false` | Print version and exit |
+
+</details>
+
+---
+
+## Usage Examples
 
 ```bash
-# Basic enumeration
-recongo -domain tesla.com
+# Full pipeline: passive sources → DNS → HTTP probe → console
+recongo -domain example.com
 
-# Custom resolvers, higher concurrency, verbose
-recongo -domain tesla.com \
+# JSON Lines export to file
+recongo -domain example.com -format json -o results.jsonl
+
+# CSV export, higher probe concurrency
+recongo -domain example.com -format csv -o assets.csv -probe-workers 100
+
+# DNS-only mode (skip HTTP probing)
+recongo -domain example.com -probe=false
+
+# Custom resolvers + verbose debug logging
+recongo -domain example.com \
   -resolvers "8.8.8.8:53,1.1.1.1:53" \
-  -workers 100 \
-  -dns-workers 200 \
   -verbose
-
-# Pipe resolved hosts into other tools
-recongo -domain tesla.com | awk '{print $2}' | httpx
 ```
 
 ---
 
-## Configuration
+## Defensive & Blue Team Context
 
-All tunables are CLI flags — no config file or environment variable parsing is required. This keeps the binary self-contained and auditable.
+> Written for **SOC analysts, threat hunters, and blue teamers** who may observe ReconGo (or similar tooling) against their estate. Knowing how recon tools behave on the wire is essential for effective detection engineering.
 
-| Flag | Default | Notes |
-|---|---|---|
-| `-workers` | `50` | Keep below open-file-descriptor limit |
-| `-dns-workers` | `100` | Each worker holds one UDP socket |
-| `-timeout` | `5s` | Increase for slow/flaky nameservers |
-| `-resolvers` | *(system)* | Override with trusted public resolvers |
+### Network observables
 
----
-
-## Adding a New Source
-
-1. Create `pkg/sources/<name>/<name>.go`
-2. Implement the `sources.Source` interface:
-
-```go
-package crtsh
-
-import "github.com/Lost-illusion69/recongo/pkg/sources"
-
-type Source struct{}
-
-func (s *Source) Name() string { return "crtsh" }
-
-func (s *Source) Fetch(domain string) ([]sources.Result, error) {
-    // HTTP call to crt.sh JSON API
-    // Parse response, return []sources.Result
-}
-```
-
-3. Register it in `cmd/recongo/main.go → registeredSources()`:
-
-```go
-func registeredSources() []sources.Source {
-    return []sources.Source{
-        &crtsh.Source{},
-        // ...
-    }
-}
-```
-
-That's it. No changes to the engine or DNS layer.
-
----
-
-## Docker
-
-```bash
-# Build
-docker build -t recongo:latest .
-
-# Run
-docker run --rm recongo:latest -domain example.com -resolvers "1.1.1.1:53"
-
-# Inspect the minimal image
-docker image inspect recongo:latest | jq '.[0].Size'
-```
-
-The `scratch`-based image contains only:
-- The statically compiled `recongo` binary
-- TLS root certificates (for HTTPS API calls)
-
----
-
-## CI / CD Pipeline
-
-The GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push to `main` and every pull request:
-
-| Job | What it does |
+| Signal | What to look for |
 |---|---|
-| **build-and-test** | Matrix build on Go 1.22 & 1.23, race detector enabled, `go mod tidy` check |
-| **lint** | `golangci-lint` with `errcheck`, `staticcheck`, `revive`, `gofmt`, `goimports` |
-| **docker-build** | Multi-stage Docker build smoke-test (no push) |
+| **DNS enumeration burst** | A single host IP fires dozens–hundreds of `A`/`AAAA` queries per minute against unique subdomains (`api.`, `dev.`, `staging.`, `mail.`, …) |
+| **Non-corporate resolvers** | Outbound UDP/53 to public resolvers (8.8.8.8, 1.1.1.1) instead of internal DNS |
+| **Passive API polling** | Outbound HTTPS to `crt.sh`, `otx.alienvault.com`, `api.hackertarget.com` from a non-browser process |
+| **HTTP probing sweep** | Rapid sequential `GET` requests to `:443`/`:80` across many hostnames from one source, often with a distinctive User-Agent |
+| **CT log correlation** | New certificate issuance for your domain appearing in CT feeds shortly before inbound scan traffic |
 
----
+### Sigma rule — rapid DNS query spike (Windows Sysmon Event ID 22)
 
-## 🛡️ Defensive Context (Blue Team)
-
-> This section is written for **SOC analysts, threat hunters, and blue teamers** who may observe ReconGo (or similar tools) running against their infrastructure. Understanding attacker tooling is a core part of a mature defence posture.
-
-### How ReconGo looks on the wire
-
-| Observable | Signal |
-|---|---|
-| **High-frequency DNS queries** | A single source IP sends dozens–hundreds of `A`/`AAAA` queries per second, often to a non-corporate resolver (8.8.8.8, 1.1.1.1) |
-| **Subdomain pattern** | Queries follow enumeration wordlists: `admin.`, `api.`, `dev.`, `staging.`, `mail.` prefixes in rapid succession |
-| **Low TTL indifference** | The resolver ignores cached TTLs — the same FQDN may be queried multiple times in seconds |
-| **No matching HTTP traffic** | DNS queries spike with no corresponding HTTP/S connections — indicating enumeration rather than browsing |
-| **User-Agent absence** | API calls (crt.sh, HackerTarget) use Go's default UA (`Go-http-client/1.1`) unless overridden |
-| **Certificate Transparency polling** | Queries to `crt.sh` or `api.hackertarget.com` for a single domain in bulk |
-
-### SIEM Detection — Windows Event ID 22 (Sysmon DNS Query)
-
-The following **Sigma rule** detects rapid DNS resolution attempts consistent with subdomain enumeration on Windows endpoints running Sysmon:
+Detects a single process emitting an abnormal volume of DNS queries — consistent with subdomain enumeration tools such as ReconGo, Subfinder, or Amass.
 
 ```yaml
 title: Rapid DNS Resolution — Possible Subdomain Enumeration
@@ -264,8 +228,8 @@ author: Lost-illusion69
 date: 2026-08-13
 tags:
   - attack.reconnaissance
-  - attack.t1595.001   # Active Scanning: Scanning IP Blocks
-  - attack.t1018       # Remote System Discovery
+  - attack.t1595.001
+  - attack.t1018
 logsource:
   product: windows
   category: dns_query          # Sysmon Event ID 22
@@ -274,71 +238,63 @@ detection:
     EventID: 22
   timeframe: 10s
   condition: selection | count() by ProcessId, Image > 50
-  # Fires when a single process emits more than 50 DNS queries in 10 seconds.
 falsepositives:
-  - Legitimate software updaters performing bulk CDN resolution
-  - Browser pre-fetching on heavily-trafficked developer machines
-  - Internal service-discovery tools (Consul, Kubernetes DNS)
+  - Software updaters resolving many CDN hostnames
+  - Browser prefetch on developer workstations
+  - Internal service-discovery (Consul, Kubernetes DNS)
 level: medium
 fields:
-  - Image          # Full path of the querying process
-  - QueryName      # The FQDN being resolved
-  - QueryResults   # Returned IP address(es)
+  - Image
+  - QueryName
+  - QueryResults
   - ProcessId
   - User
 ```
 
-### Network-level detection (DNS / NDR)
+### HTTP probing detection
 
-```yaml
-title: DNS Enumeration Burst — Single Source IP
-id: b9e2d471-5c3a-4f8b-a02d-1e7f9c6b3d84
-status: experimental
-description: >
-  More than 200 unique FQDN queries from a single RFC-1918 or external IP
-  within 60 seconds against the corporate recursive resolver.
-logsource:
-  product: zeek
-  service: dns
-detection:
-  selection:
-    proto: udp
-    qtype_name|contains:
-      - "A"
-      - "AAAA"
-  timeframe: 60s
-  condition: selection | count(query) by id.orig_h > 200
-falsepositives:
-  - CI/CD pipelines performing integration tests
-  - Load balancers with health-check probes
-level: high
-fields:
-  - id.orig_h    # Source IP
-  - query        # Queried hostname
-  - answers      # Resolved IPs
+ReconGo sets an explicit User-Agent on probe requests:
+
 ```
+ReconGo/1.0 (+https://github.com/Lost-illusion69/recongo)
+```
+
+Passive source API calls use a similar fingerprint:
+
+```
+ReconGo/1.0 (github.com/Lost-illusion69/recongo)
+```
+
+**Detection ideas:**
+
+| Layer | Rule concept |
+|---|---|
+| **WAF / reverse proxy** | Alert on >N distinct hostnames requested by one source IP within 60 s on ports 80/443 |
+| **NDR / Zeek** | `http.log` — group by `id.orig_h`, count unique `host` values; threshold > 50/min |
+| **SIEM** | Correlate DNS query burst (Event ID 22) followed within 5 min by outbound HTTP GET fan-out to the same FQDN set |
+| **User-Agent match** | `User-Agent` contains `ReconGo/1.0` — high-fidelity but trivially spoofed; use as enrichment, not sole signal |
 
 ### Recommended mitigations
 
 | Control | Implementation |
 |---|---|
-| **DNS rate limiting** | Configure recursive resolver (Unbound, BIND, Windows DNS) to rate-limit queries per source IP |
-| **RPZ (Response Policy Zones)** | Block or redirect queries matching known enumeration patterns |
-| **Passive DNS logging** | Enable full DNS query logging; alert on query volume anomalies |
-| **Certificate Transparency monitoring** | Monitor crt.sh / Google CT logs for new certificates issued against your domain |
-| **Ingress firewall** | Block outbound DNS to non-authorised resolvers (prevent use of 8.8.8.8 bypass) |
+| **DNS rate limiting** | Per-source-IP limits on recursive resolvers (Unbound, BIND, Windows DNS) |
+| **RPZ** | Response Policy Zones to sinkhole or redirect suspicious enumeration patterns |
+| **CT monitoring** | Alert on new certificates issued for your domains via crt.sh / Google CT |
+| **Egress filtering** | Restrict outbound DNS to authorised resolvers only |
+| **WAF rate rules** | Per-IP request limits on edge for rapid hostname scanning |
 
 ---
 
-## Roadmap
+## CI / CD
 
-- [ ] Real source integrations: crt.sh, HackerTarget, Alienvault OTX, VirusTotal
-- [ ] JSON / CSV / NDJSON output formats
-- [ ] stdin / file input for multi-domain scans
-- [ ] HTTP probing stage (status codes, titles)
-- [ ] Port scanning integration
-- [ ] Config file support (YAML)
-- [ ] Plugin system for custom sources
+Every push to `main` and every pull request triggers [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
+
+| Step | Purpose |
+|---|---|
+| `gofmt -s -l .` | Enforce simplified, canonical Go formatting |
+| `go test -v -race ./...` | Full test suite under the race detector |
+| `go build -v -o recongo ./cmd/recongo` | Verify release binary compiles cleanly |
 
 ---
 
