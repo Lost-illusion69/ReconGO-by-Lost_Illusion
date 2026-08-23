@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Lost-illusion69/recongo/models"
 	"github.com/Lost-illusion69/recongo/pkg/prober"
 )
 
@@ -22,6 +23,13 @@ func sampleAsset() prober.AssetResult {
 		ContentLength: 128,
 		ResponseTime:  42 * time.Millisecond,
 		Endpoints:     []string{"/api/v1/health"},
+		FuzzResults: []models.FuzzHit{{
+			Path:          "/admin",
+			URL:           "https://api.example.com/admin",
+			StatusCode:    200,
+			ContentLength: 64,
+			Kind:          "directory",
+		}},
 	}
 }
 
@@ -54,6 +62,10 @@ func TestWriteJSON(t *testing.T) {
 	eps, ok := m["endpoints"].([]any)
 	if !ok || len(eps) != 1 {
 		t.Errorf("endpoints = %v", m["endpoints"])
+	}
+	fuzz, ok := m["fuzz_results"].([]any)
+	if !ok || len(fuzz) != 1 {
+		t.Errorf("fuzz_results = %v", m["fuzz_results"])
 	}
 }
 
@@ -118,6 +130,9 @@ func TestWriteText(t *testing.T) {
 	}
 	if !strings.Contains(out, "/api/v1/health") {
 		t.Errorf("missing endpoint: %s", out)
+	}
+	if !strings.Contains(out, "/admin") {
+		t.Errorf("missing fuzz path: %s", out)
 	}
 	if !strings.Contains(out, "SCAN SUMMARY") {
 		t.Errorf("missing summary footer: %s", out)

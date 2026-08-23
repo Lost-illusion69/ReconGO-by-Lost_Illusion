@@ -29,6 +29,15 @@ func TestParseFlagsArchiveOriginDefaults(t *testing.T) {
 	if !cfg.mutate || !cfg.cluster || !cfg.probe {
 		t.Error("expected mutate/cluster/probe defaults true")
 	}
+	if cfg.fuzz {
+		t.Error("expected fuzz default false")
+	}
+	if cfg.wordlist == "" {
+		t.Error("expected default wordlist path")
+	}
+	if !strings.Contains(strings.ReplaceAll(cfg.wordlist, "\\", "/"), "raft-medium-directories-lowercase.txt") {
+		t.Errorf("unexpected default wordlist: %s", cfg.wordlist)
+	}
 }
 
 func TestParseFlagsDisableArchive(t *testing.T) {
@@ -74,6 +83,36 @@ func TestFormatSource(t *testing.T) {
 func TestFormatSourceCaseInsensitive(t *testing.T) {
 	if got := formatSource("CRT.SH"); got != "crt.sh" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestParseFlagsFuzz(t *testing.T) {
+	cfg, err := parseFlags([]string{
+		"-domain", "example.com",
+		"-fuzz",
+		"-wordlist", "/tmp/custom.txt",
+		"-probe",
+		"-mutate=false",
+		"-format", "json",
+		"-o", "out.jsonl",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.fuzz {
+		t.Fatal("expected -fuzz true")
+	}
+	if cfg.wordlist != "/tmp/custom.txt" {
+		t.Errorf("wordlist = %q", cfg.wordlist)
+	}
+	if !cfg.probe {
+		t.Error("probe should remain true")
+	}
+	if cfg.mutate {
+		t.Error("mutate should be false")
+	}
+	if cfg.format != "json" || cfg.outputPath != "out.jsonl" {
+		t.Errorf("format=%q o=%q", cfg.format, cfg.outputPath)
 	}
 }
 

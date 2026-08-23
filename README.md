@@ -58,6 +58,9 @@ Built on Go 1.22+ with minimal dependencies (`golang.org/x/net` for HTTP/2), Rec
 [HTTP/2 Prober Pool + JS Mining + Origin Correlation]       (-probe, -find-origin)
               │
               ▼
+[Content Discovery Fuzzing]                                 (-fuzz, -wordlist)
+              │
+              ▼
 [MMH3 Clustering + Takeover Checks + Writer]                (-cluster, -takeover)
               │
               ▼
@@ -77,6 +80,7 @@ Built on Go 1.22+ with minimal dependencies (`golang.org/x/net` for HTTP/2), Rec
 | **Subdomain takeover verification** | `-takeover` — CNAME dangling-service fingerprint checks |
 | **Webhook alerting** | `-slack-webhook` / `-discord-webhook` — scan completion notifications |
 | **In-memory JS endpoint mining** | Fetches referenced `.js` bundles and extracts API routes/parameters |
+| **Directory / content discovery** | `-fuzz` / `-wordlist` — concurrent path fuzzing of live 200/403 web apps |
 | **Historical archive mining** | `-archive` — Wayback Machine CDX + AlienVault OTX passive DNS & URL lists |
 | **Origin IP & CDN bypass** | `-find-origin` — MX/SPF parsing, CDN detection, favicon MMH3 correlation |
 | **HTTP/2 probing** | HTTP/2 transport with HTTP/1.1 fallback via `golang.org/x/net/http2` |
@@ -130,6 +134,8 @@ go test -v -race ./...
 | `-takeover` | bool | `true` | Enable subdomain takeover CNAME verification |
 | `-archive` | bool | `true` | Enable Wayback + OTX historical archive mining |
 | `-find-origin` | bool | `true` | Enable MX/SPF origin IP & CDN bypass correlation |
+| `-fuzz` | bool | `false` | Directory/endpoint fuzzing against live apps (HTTP 200/403) |
+| `-wordlist` | string | `$HOME/bugbounty/wordlists/SecLists/Discovery/Web-Content/raft-medium-directories-lowercase.txt` | Wordlist used when `-fuzz` is enabled |
 | `-format` | string | `text` | Output format: `text`, `json`, or `csv` |
 | `-o` | string | *(stdout)* | Write structured results to file |
 | `-delay` | duration | `0` | Base per-request delay with jitter |
@@ -184,6 +190,14 @@ recongo -domain target.com \
   -headers "Authorization: Bearer $TOKEN"
 ```
 
+### Directory fuzzing of live web apps
+
+```bash
+recongo -domain example.com -fuzz -format json -o results.jsonl
+# optional custom list:
+recongo -domain example.com -fuzz -wordlist ./lists/api-paths.txt
+```
+
 ### DNS-only mode (no HTTP probe)
 
 ```bash
@@ -218,7 +232,10 @@ Each probed host emits one nested JSON object on stdout:
   "is_cdn_proxied": true,
   "cdn_provider": "Cloudflare",
   "potential_origin_ips": ["203.0.113.10"],
-  "takeover_risk": false
+  "takeover_risk": false,
+  "fuzz_results": [
+    { "path": "/admin", "url": "https://api.example.com/admin", "status_code": 200, "content_length": 128, "kind": "directory" }
+  ]
 }
 ```
 

@@ -5,6 +5,8 @@
 package prober
 
 import (
+	"context"
+
 	intprober "github.com/Lost-illusion69/recongo/internal/prober"
 	"github.com/Lost-illusion69/recongo/models"
 )
@@ -36,4 +38,29 @@ func ExtractTitle(body []byte) string {
 // MineEndpoints exposes route mining for tests.
 func MineEndpoints(body []byte) []string {
 	return intprober.MineEndpoints(string(body))
+}
+
+// DefaultWordlistPath is the built-in SecLists directory wordlist location.
+func DefaultWordlistPath() string {
+	return intprober.DefaultWordlistPath()
+}
+
+// LoadWordlist reads and normalizes a content-discovery wordlist file.
+func LoadWordlist(path string) ([]string, error) {
+	return intprober.LoadWordlist(path)
+}
+
+// FuzzEligible reports whether a probe status should trigger directory fuzzing.
+func FuzzEligible(status int) bool {
+	return intprober.FuzzEligible(status)
+}
+
+// Fuzz runs concurrent path discovery against a live web origin.
+func Fuzz(ctx context.Context, baseURL string, words []string, opts Options, workers int) ([]models.FuzzHit, error) {
+	return intprober.Fuzz(ctx, baseURL, words, opts, workers)
+}
+
+// MergeFuzzIntoEndpoints unions fuzz hits into the mined endpoint list.
+func MergeFuzzIntoEndpoints(endpoints []string, hits []models.FuzzHit) []string {
+	return intprober.MergeFuzzIntoEndpoints(endpoints, hits)
 }

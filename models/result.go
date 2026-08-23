@@ -18,6 +18,9 @@ type Result struct {
 	ClusterTag    string        `json:"cluster_tag,omitempty" csv:"cluster_tag"`
 	Endpoints     []string      `json:"endpoints" csv:"endpoints"`
 
+	// Content discovery hits from the optional -fuzz phase.
+	FuzzResults []FuzzHit `json:"fuzz_results"`
+
 	// Archive intelligence (Wayback / OTX).
 	HistoricalURLs   []string `json:"historical_urls"`
 	DiscoveredParams []string `json:"discovered_params"`
@@ -30,4 +33,13 @@ type Result struct {
 	// Takeover assessment.
 	TakeoverRisk  bool   `json:"takeover_risk,omitempty"`
 	TakeoverCNAME string `json:"takeover_cname,omitempty"`
+}
+
+// FuzzHit is a single directory/file/API path confirmed during content discovery.
+type FuzzHit struct {
+	Path          string `json:"path"`
+	URL           string `json:"url"`
+	StatusCode    int    `json:"status_code"`
+	ContentLength int64  `json:"content_length"`
+	Kind          string `json:"kind"`
 }
