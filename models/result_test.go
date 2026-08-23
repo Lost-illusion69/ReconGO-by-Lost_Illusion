@@ -26,6 +26,12 @@ func TestResultJSONRoundTrip(t *testing.T) {
 		CDNProvider:        "Cloudflare",
 		PotentialOriginIPs: []string{"203.0.113.1"},
 		TakeoverRisk:       false,
+		FuzzResults: []FuzzHit{{
+			Path:       "/admin",
+			URL:        "https://api.example.com/admin",
+			StatusCode: 403,
+			Kind:       "directory",
+		}},
 	}
 
 	data, err := json.Marshal(r)
@@ -48,6 +54,9 @@ func TestResultJSONRoundTrip(t *testing.T) {
 	}
 	if len(decoded.HistoricalURLs) != 1 {
 		t.Errorf("historical_urls = %v", decoded.HistoricalURLs)
+	}
+	if len(decoded.FuzzResults) != 1 || decoded.FuzzResults[0].Path != "/admin" {
+		t.Errorf("fuzz_results = %v", decoded.FuzzResults)
 	}
 }
 

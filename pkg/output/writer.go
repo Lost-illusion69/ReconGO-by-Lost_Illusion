@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Lost-illusion69/recongo/models"
 	"github.com/Lost-illusion69/recongo/pkg/prober"
 )
 
@@ -229,6 +230,7 @@ func (wr *Writer) writeJSON(a prober.AssetResult) error {
 		PotentialOriginIPs: a.PotentialOriginIPs,
 		TakeoverRisk:       a.TakeoverRisk,
 		TakeoverCNAME:      a.TakeoverCNAME,
+		FuzzResults:        a.FuzzResults,
 	}
 	if dto.Asset.IPs == nil {
 		dto.Asset.IPs = []string{}
@@ -245,6 +247,9 @@ func (wr *Writer) writeJSON(a prober.AssetResult) error {
 	if dto.PotentialOriginIPs == nil {
 		dto.PotentialOriginIPs = []string{}
 	}
+	if dto.FuzzResults == nil {
+		dto.FuzzResults = []models.FuzzHit{}
+	}
 
 	enc := json.NewEncoder(wr.w)
 	enc.SetEscapeHTML(false)
@@ -257,11 +262,18 @@ func (wr *Writer) writeCSV(a prober.AssetResult) error {
 			"Host", "IPs", "URL", "StatusCode", "Title", "Server", "ContentLength",
 			"ResponseTime", "FaviconMMH3", "BodyMMH3", "ClusterTag", "Endpoints",
 			"HistoricalURLs", "DiscoveredParams", "IsCDNProxied", "CDNProvider",
-			"PotentialOriginIPs", "TakeoverRisk", "TakeoverCNAME",
+			"PotentialOriginIPs", "TakeoverRisk", "TakeoverCNAME", "FuzzResults",
 		}); err != nil {
 			return err
 		}
 		wr.csvHdr = true
+	}
+
+	fuzzPaths := make([]string, 0, len(a.FuzzResults))
+	for _, h := range a.FuzzResults {
+		if h.Path != "" {
+			fuzzPaths = append(fuzzPaths, fmt.Sprintf("%s:%d", h.Path, h.StatusCode))
+		}
 	}
 
 	return wr.csvW.Write([]string{
@@ -284,6 +296,7 @@ func (wr *Writer) writeCSV(a prober.AssetResult) error {
 		strings.Join(a.PotentialOriginIPs, ";"),
 		fmt.Sprintf("%t", a.TakeoverRisk),
 		a.TakeoverCNAME,
+		strings.Join(fuzzPaths, ";"),
 	})
 }
 
@@ -299,6 +312,7 @@ type jsonResult struct {
 	PotentialOriginIPs []string         `json:"potential_origin_ips"`
 	TakeoverRisk       bool             `json:"takeover_risk,omitempty"`
 	TakeoverCNAME      string           `json:"takeover_cname,omitempty"`
+	FuzzResults        []models.FuzzHit `json:"fuzz_results"`
 }
 
 type assetBlock struct {
@@ -446,6 +460,18 @@ func renderResultCard(a prober.AssetResult, color bool) string {
 		b.WriteString(fmt.Sprintf("│    RISK          CNAME → %-52s │\n", truncate(a.TakeoverCNAME, 52)))
 	}
 
+	if len(a.FuzzResults) > 0 {
+		b.WriteString("├─ Fuzz Results ───────────────────────────────────────────────────────────────┤\n")
+		for i, h := range a.FuzzResults {
+			if i >= 12 {
+				b.WriteString(fmt.Sprintf("│    … +%d more                                                                │\n", len(a.FuzzResults)-12))
+				break
+			}
+			line := fmt.Sprintf("[%d] %-10s %s", h.StatusCode, h.Kind, h.Path)
+			b.WriteString(fmt.Sprintf("│    %-73s │\n", truncate(line, 73)))
+		}
+	}
+
 	b.WriteString("└──────────────────────────────────────────────────────────────────────────────┘\n\n")
 	if color {
 		b.WriteString(colorReset)
@@ -454,7 +480,7 @@ func renderResultCard(a prober.AssetResult, color bool) string {
 }
 
 func renderSummary(m ScanMeta, results []prober.AssetResult, color bool) string {
-	var live, blocked, endpoints int
+	var live, blocked, endpoints, fuzzHits int
 	for _, r := range results {
 		switch {
 		case r.StatusCode >= 200 && r.StatusCode < 400:
@@ -463,6 +489,7 @@ func renderSummary(m ScanMeta, results []prober.AssetResult, color bool) string 
 			blocked++
 		}
 		endpoints += len(r.Endpoints)
+		fuzzHits += len(r.FuzzResults)
 	}
 
 	var b strings.Builder
@@ -477,6 +504,7 @@ func renderSummary(m ScanMeta, results []prober.AssetResult, color bool) string 
 	b.WriteString(fmt.Sprintf("║  Live (2xx/3xx) %-58d ║\n", live))
 	b.WriteString(fmt.Sprintf("║  Blocked/Error %-59d ║\n", blocked))
 	b.WriteString(fmt.Sprintf("║  Endpoints     %-61d ║\n", endpoints))
+	b.WriteString(fmt.Sprintf("║  Fuzz hits     %-61d ║\n", fuzzHits))
 	if m.Domain != "" {
 		b.WriteString(fmt.Sprintf("║  Domain        %-61s ║\n", truncate(m.Domain, 61)))
 	}

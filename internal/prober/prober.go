@@ -189,4 +189,7 @@ func ensureSliceFields(r *models.Result) {
 	if r.PotentialOriginIPs == nil {
 		r.PotentialOriginIPs = []string{}
 	}
+	if r.FuzzResults == nil {
+		r.FuzzResults = []models.FuzzHit{}
+	}
 }

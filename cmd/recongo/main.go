@@ -3,7 +3,7 @@
 // Usage:
 //
 //	recongo -domain example.com [-workers 50] [-dns-workers 100] [-timeout 5s] \
-//	  [-probe] [-mutate] [-cluster] [-max-mutations 500] \
+//	  [-probe] [-mutate] [-cluster] [-fuzz] [-wordlist path] [-max-mutations 500] \
 //	  [-probe-workers 50] [-http-timeout 5s] [-o results.jsonl] [-format json]
 //
 // The binary exits with code 0 on success, 1 on usage/config errors,
@@ -71,6 +71,8 @@ type config struct {
 	takeover       bool
 	slackWebhook   string
 	discordWebhook string
+	fuzz           bool
+	wordlist       string
 }
 
 func parseFlags(args []string) (*config, error) {
@@ -102,6 +104,8 @@ func parseFlags(args []string) (*config, error) {
 	takeoverFlag := fs.Bool("takeover", true, "Enable subdomain takeover CNAME verification")
 	fs.StringVar(&cfg.slackWebhook, "slack-webhook", "", "Slack incoming webhook URL for scan completion alerts")
 	fs.StringVar(&cfg.discordWebhook, "discord-webhook", "", "Discord webhook URL for scan completion alerts")
+	fs.BoolVar(&cfg.fuzz, "fuzz", false, "Enable directory/endpoint fuzzing against live web apps (HTTP 200/403)")
+	fs.StringVar(&cfg.wordlist, "wordlist", prober.DefaultWordlistPath(), "Path to content-discovery wordlist (used with -fuzz)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -296,6 +300,9 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 	resolvedCh := resolver.ResolveAll(ctx, hostCh)
 
 	if !cfg.probe {
+		if cfg.fuzz {
+			log.WarnContext(ctx, "fuzz requires HTTP probing; ignoring -fuzz because -probe=false")
+		}
 		return drainResolved(ctx, log, resolvedCh, format)
 	}
 
@@ -304,19 +311,31 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 		return fmt.Errorf("parse headers: %w", err)
 	}
 
+	var fuzzWords []string
+	if cfg.fuzz {
+		fuzzWords, err = prober.LoadWordlist(cfg.wordlist)
+		if err != nil {
+			return fmt.Errorf("fuzz wordlist: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "  [fuzz] loaded %d paths from %s\n", len(fuzzWords), cfg.wordlist)
+	}
+
+	probeOpts := prober.Options{
+		Timeout:        cfg.httpTimeout,
+		Delay:          cfg.delay,
+		RandomAgent:    cfg.randomAgent,
+		Verbose:        cfg.verbose,
+		FindOrigin:     cfg.findOrigin,
+		OriginFindings: originFindings,
+		Headers:        probeHeaders,
+		ProxyURL:       cfg.proxy,
+	}
+
 	// Stage 4: HTTP probe alive hosts.
 	pool := engine.NewProbePool(engine.ProbeConfig{
 		Workers: cfg.probeWorkers,
 		Timeout: cfg.httpTimeout,
-		Options: prober.Options{
-			Delay:          cfg.delay,
-			RandomAgent:    cfg.randomAgent,
-			Verbose:        cfg.verbose,
-			FindOrigin:     cfg.findOrigin,
-			OriginFindings: originFindings,
-			Headers:        probeHeaders,
-			ProxyURL:       cfg.proxy,
-		},
+		Options: probeOpts,
 	}, log)
 	assetCh := pool.Run(ctx, resolvedCh)
 
@@ -340,6 +359,19 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 			}
 			if cfg.cluster {
 				clusterer.Tag(&a)
+			}
+			if cfg.fuzz && len(fuzzWords) > 0 && prober.FuzzEligible(a.StatusCode) {
+				hits, ferr := prober.Fuzz(ctx, a.URL, fuzzWords, probeOpts, cfg.probeWorkers)
+				if ferr != nil {
+					log.DebugContext(ctx, "fuzz failed",
+						slog.String("host", a.Host),
+						slog.String("error", ferr.Error()),
+					)
+				} else {
+					a.FuzzResults = hits
+					a.Endpoints = prober.MergeFuzzIntoEndpoints(a.Endpoints, hits)
+					fmt.Fprintf(os.Stderr, "  [fuzz] %-48s  %d hit(s)\n", a.Host, len(hits))
+				}
 			}
 			found.Add(1)
 			totalEndpoints.Add(int64(len(a.Endpoints)))
@@ -494,6 +526,8 @@ func main() {
 		slog.Bool("archive", cfg.archive),
 		slog.Bool("find-origin", cfg.findOrigin),
 		slog.Bool("takeover", cfg.takeover),
+		slog.Bool("fuzz", cfg.fuzz),
+		slog.String("wordlist", cfg.wordlist),
 	)
 	fmt.Fprintf(os.Stderr, "\n  ReconGO %s — discovery phase\n  Target: %s\n\n", version, cfg.domain)
 
