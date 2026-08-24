@@ -145,3 +145,142 @@ func TestFuzzEligible(t *testing.T) {
 		t.Fatal("404/301 should not be eligible")
 	}
 }
+
+func TestFuzzEligibleWith401(t *testing.T) {
+	if !FuzzEligibleWith401(200, false) || !FuzzEligibleWith401(403, false) {
+		t.Fatal("200/403 should always be eligible")
+	}
+	if !FuzzEligibleWith401(401, true) {
+		t.Fatal("401 should be eligible when allowUnauthorized is set")
+	}
+	if FuzzEligibleWith401(401, false) {
+		t.Fatal("401 should not be eligible by default")
+	}
+}
+
+func TestExpandExtensions(t *testing.T) {
+	words := ExpandExtensions([]string{"/admin", "/secret.php", "/api/v1"}, []string{"bak", "old"})
+	joined := strings.Join(words, ",")
+	for _, want := range []string{"/admin", "/admin.bak", "/admin.old", "/secret.php", "/api/v1", "/api/v1.bak"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("expansion missing %q in %v", want, words)
+		}
+	}
+	if strings.Contains(joined, "/secret.php.bak") {
+		t.Errorf("file words must not receive extension variants: %v", words)
+	}
+}
+
+func TestFuzzWithConfigExtensions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/config.bak":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("backup config"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("not found"))
+		}
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	hits, err := FuzzWithConfig(ctx, FuzzConfig{
+		BaseURL:    srv.URL,
+		Words:      []string{"/config"},
+		Extensions: []string{"bak"},
+		Opts:       Options{Timeout: 2 * time.Second},
+		Workers:    4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].Path != "/config.bak" {
+		t.Fatalf("expected /config.bak hit, got %+v", hits)
+	}
+}
+
+func TestFuzzRecursiveDirectories(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/admin/", "/admin":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("admin area"))
+		case "/admin/settings":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("settings page"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("not found"))
+		}
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	hits, err := FuzzWithConfig(ctx, FuzzConfig{
+		BaseURL: srv.URL,
+		Words:   []string{"/admin/", "/settings"},
+		Opts:    Options{Timeout: 2 * time.Second},
+		Workers: 4,
+		Depth:   2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, h := range hits {
+		got[h.Path] = true
+	}
+	if !got["/admin/"] {
+		t.Errorf("expected top-level /admin/ hit, got %+v", hits)
+	}
+	if !got["/admin/settings"] {
+		t.Errorf("expected recursive /admin/settings hit, got %+v", hits)
+	}
+}
+
+func TestFuzzRecursiveRedirectFollow(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/console":
+			w.Header().Set("Location", "/console/")
+			w.WriteHeader(http.StatusFound)
+			_, _ = w.Write([]byte("moving"))
+		case "/console/":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("console home"))
+		case "/console/settings":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("console settings"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("not found"))
+		}
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	hits, err := FuzzWithConfig(ctx, FuzzConfig{
+		BaseURL: srv.URL,
+		Words:   []string{"/console", "/settings"},
+		Opts:    Options{Timeout: 2 * time.Second},
+		Workers: 4,
+		Depth:   2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, h := range hits {
+		got[h.Path] = true
+	}
+	if !got["/console/settings"] {
+		t.Errorf("expected redirected /console/settings hit, got %+v", hits)
+	}
+}

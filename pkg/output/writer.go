@@ -231,6 +231,7 @@ func (wr *Writer) writeJSON(a prober.AssetResult) error {
 		TakeoverRisk:       a.TakeoverRisk,
 		TakeoverCNAME:      a.TakeoverCNAME,
 		FuzzResults:        a.FuzzResults,
+		Secrets:            a.Secrets,
 	}
 	if dto.Asset.IPs == nil {
 		dto.Asset.IPs = []string{}
@@ -250,6 +251,9 @@ func (wr *Writer) writeJSON(a prober.AssetResult) error {
 	if dto.FuzzResults == nil {
 		dto.FuzzResults = []models.FuzzHit{}
 	}
+	if dto.Secrets == nil {
+		dto.Secrets = []models.SecretFinding{}
+	}
 
 	enc := json.NewEncoder(wr.w)
 	enc.SetEscapeHTML(false)
@@ -263,6 +267,7 @@ func (wr *Writer) writeCSV(a prober.AssetResult) error {
 			"ResponseTime", "FaviconMMH3", "BodyMMH3", "ClusterTag", "Endpoints",
 			"HistoricalURLs", "DiscoveredParams", "IsCDNProxied", "CDNProvider",
 			"PotentialOriginIPs", "TakeoverRisk", "TakeoverCNAME", "FuzzResults",
+			"Secrets",
 		}); err != nil {
 			return err
 		}
@@ -274,6 +279,11 @@ func (wr *Writer) writeCSV(a prober.AssetResult) error {
 		if h.Path != "" {
 			fuzzPaths = append(fuzzPaths, fmt.Sprintf("%s:%d", h.Path, h.StatusCode))
 		}
+	}
+
+	secretHits := make([]string, 0, len(a.Secrets))
+	for _, s := range a.Secrets {
+		secretHits = append(secretHits, fmt.Sprintf("%s:%s", s.Kind, s.Value))
 	}
 
 	return wr.csvW.Write([]string{
@@ -297,22 +307,24 @@ func (wr *Writer) writeCSV(a prober.AssetResult) error {
 		fmt.Sprintf("%t", a.TakeoverRisk),
 		a.TakeoverCNAME,
 		strings.Join(fuzzPaths, ";"),
+		strings.Join(secretHits, ";"),
 	})
 }
 
 type jsonResult struct {
-	Asset              assetBlock       `json:"asset"`
-	HTTP               httpBlock        `json:"http"`
-	Fingerprints       fingerprintBlock `json:"fingerprints"`
-	Endpoints          []string         `json:"endpoints"`
-	HistoricalURLs     []string         `json:"historical_urls"`
-	DiscoveredParams   []string         `json:"discovered_params"`
-	IsCDNProxied       bool             `json:"is_cdn_proxied"`
-	CDNProvider        string           `json:"cdn_provider,omitempty"`
-	PotentialOriginIPs []string         `json:"potential_origin_ips"`
-	TakeoverRisk       bool             `json:"takeover_risk,omitempty"`
-	TakeoverCNAME      string           `json:"takeover_cname,omitempty"`
-	FuzzResults        []models.FuzzHit `json:"fuzz_results"`
+	Asset              assetBlock             `json:"asset"`
+	HTTP               httpBlock              `json:"http"`
+	Fingerprints       fingerprintBlock       `json:"fingerprints"`
+	Endpoints          []string               `json:"endpoints"`
+	HistoricalURLs     []string               `json:"historical_urls"`
+	DiscoveredParams   []string               `json:"discovered_params"`
+	IsCDNProxied       bool                   `json:"is_cdn_proxied"`
+	CDNProvider        string                 `json:"cdn_provider,omitempty"`
+	PotentialOriginIPs []string               `json:"potential_origin_ips"`
+	TakeoverRisk       bool                   `json:"takeover_risk,omitempty"`
+	TakeoverCNAME      string                 `json:"takeover_cname,omitempty"`
+	FuzzResults        []models.FuzzHit       `json:"fuzz_results"`
+	Secrets            []models.SecretFinding `json:"secrets"`
 }
 
 type assetBlock struct {
@@ -468,6 +480,18 @@ func renderResultCard(a prober.AssetResult, color bool) string {
 				break
 			}
 			line := fmt.Sprintf("[%d] %-10s %s", h.StatusCode, h.Kind, h.Path)
+			b.WriteString(fmt.Sprintf("│    %-73s │\n", truncate(line, 73)))
+		}
+	}
+
+	if len(a.Secrets) > 0 {
+		b.WriteString("├─ Secrets ────────────────────────────────────────────────────────────────────┤\n")
+		for i, s := range a.Secrets {
+			if i >= 6 {
+				b.WriteString(fmt.Sprintf("│    … +%d more                                                                │\n", len(a.Secrets)-6))
+				break
+			}
+			line := fmt.Sprintf("%s %s %s (%s)", s.Confidence, s.Kind, s.Value, s.Source)
 			b.WriteString(fmt.Sprintf("│    %-73s │\n", truncate(line, 73)))
 		}
 	}

@@ -33,6 +33,18 @@ type Result struct {
 	// Takeover assessment.
 	TakeoverRisk  bool   `json:"takeover_risk,omitempty"`
 	TakeoverCNAME string `json:"takeover_cname,omitempty"`
+
+	// Exposed credential material found in HTML/JS bodies (optional -secrets).
+	Secrets []SecretFinding `json:"secrets"`
+}
+
+// SecretFinding is a redacted credential candidate detected in client code.
+type SecretFinding struct {
+	Kind       string `json:"kind"`
+	Confidence string `json:"confidence"`
+	Value      string `json:"value"`
+	Source     string `json:"source"`
+	Context    string `json:"context,omitempty"`
 }
 
 // FuzzHit is a single directory/file/API path confirmed during content discovery.

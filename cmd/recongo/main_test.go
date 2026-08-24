@@ -115,6 +115,48 @@ func TestParseFlagsFuzz(t *testing.T) {
 		t.Errorf("format=%q o=%q", cfg.format, cfg.outputPath)
 	}
 }
+func TestParseFlagsFuzzExpansion(t *testing.T) {
+	cfg, err := parseFlags([]string{
+		"-domain", "example.com",
+		"-fuzz",
+		"-ext", "bak,old, swp",
+		"-recursive",
+		"-fuzz-depth", "3",
+		"-fuzz-401",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.fuzz || !cfg.recursive || !cfg.fuzz401 {
+		t.Errorf("fuzz=%v recursive=%v fuzz401=%v", cfg.fuzz, cfg.recursive, cfg.fuzz401)
+	}
+	if cfg.fuzzDepth != 3 {
+		t.Errorf("fuzz-depth = %d", cfg.fuzzDepth)
+	}
+	want := []string{"bak", "old", "swp"}
+	if strings.Join(cfg.fuzzExt, ",") != strings.Join(want, ",") {
+		t.Errorf("fuzz-ext = %v, want %v", cfg.fuzzExt, want)
+	}
+}
+
+func TestParseFlagsSecrets(t *testing.T) {
+	// Enabled by default so recon runs surface exposed credentials automatically.
+	cfg, err := parseFlags([]string{"-domain", "example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.secrets {
+		t.Error("expected -secrets default true")
+	}
+
+	cfg2, err := parseFlags([]string{"-domain", "example.com", "-secrets=false"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.secrets {
+		t.Error("expected -secrets=false to disable scanning")
+	}
+}
 
 func TestParseFlagsUnknown(t *testing.T) {
 	_, err := parseFlags([]string{"-domain", "example.com", "-not-a-flag", "x"})

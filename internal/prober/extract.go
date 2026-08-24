@@ -30,6 +30,9 @@ type Options struct {
 	OriginFindings *origin.Findings
 	Headers        map[string]string
 	ProxyURL       string
+	// ScanSecrets enables credential detection over fetched HTML/JS bodies.
+	// It adds no network requests (bodies are already in memory).
+	ScanSecrets bool
 }
 
 func (o Options) withDefaults() Options {
