@@ -2,11 +2,14 @@ package prober
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -282,5 +285,78 @@ func TestFuzzRecursiveRedirectFollow(t *testing.T) {
 	}
 	if !got["/console/settings"] {
 		t.Errorf("expected redirected /console/settings hit, got %+v", hits)
+	}
+}
+
+// TestFuzzAbortsUniformBlockEarly reproduces a CDN/WAF wall that answers HTTP
+// 403 for every path with varying body sizes (defeating the wildcard filter)
+// and asserts the sweep stops early instead of exhausting the wordlist.
+func TestFuzzAbortsUniformBlockEarly(t *testing.T) {
+	var served atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("blocked " + r.URL.Path + strings.Repeat("z", len(r.URL.Path)%64)))
+	}))
+	defer srv.Close()
+
+	words := make([]string, 0, 400)
+	for i := 0; i < 400; i++ {
+		words = append(words, fmt.Sprintf("/path%03d", i))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	hits, err := Fuzz(ctx, srv.URL, words, Options{Timeout: 2 * time.Second}, 8)
+	var blk *BlockedError
+	if !errors.As(err, &blk) {
+		t.Fatalf("want BlockedError, got err=%v hits=%d", err, len(hits))
+	}
+	if blk.Status != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", blk.Status)
+	}
+	if n := served.Load(); n >= int64(len(words)) {
+		t.Errorf("sweep did not stop early: served %d/%d requests", n, len(words))
+	}
+}
+
+// TestFuzzKeepsRunningWhenStatusesVary ensures mixed-status sites are never
+// mistaken for a uniform wall, even past the abort sample threshold.
+func TestFuzzKeepsRunningWhenStatusesVary(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/admin":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("dashboard"))
+		default:
+			// Varying 403 bodies: an auth wall with per-path error text.
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(strings.Repeat("x", 20+len(r.URL.Path))))
+		}
+	}))
+	defer srv.Close()
+
+	// Plant the live path early, mirroring how real wordlists rank common
+	// directories (/admin sits near the top of SecLists).
+	words := make([]string, 0, 132)
+	for i := 0; i < 131; i++ {
+		words = append(words, fmt.Sprintf("/miss%03d", i))
+	}
+	words = append(words[:5], append([]string{"/admin"}, words[5:]...)...)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	hits, err := Fuzz(ctx, srv.URL, words, Options{Timeout: 2 * time.Second}, 8)
+	if err != nil {
+		t.Fatalf("mixed-status sweep must not abort: %v", err)
+	}
+	found := map[string]int{}
+	for _, h := range hits {
+		found[h.Path] = h.StatusCode
+	}
+	if found["/admin"] != http.StatusOK {
+		t.Errorf("expected /admin 200 to survive, got %+v", found)
 	}
 }

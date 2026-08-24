@@ -19,7 +19,85 @@ const (
 	fuzzBodyLimit      = 8 << 10
 	fuzzBaselineSlack  = 48
 	defaultFuzzWorkers = 50
+	// fuzzAbortSample is how many interesting responses are observed before a
+	// uniform blocking status stops the sweep. Small enough to spare the target
+	// thousands of wasted requests, large enough to ignore small samples.
+	fuzzAbortSample = 120
 )
+
+// BlockedError reports that content discovery was abandoned because every
+// sampled response carried one identical wall status — the signature of a WAF,
+// bot-defense page, or rate limiter answering every path the same way.
+type BlockedError struct {
+	Status  int // HTTP status shared by every sampled response
+	Sampled int // total interesting responses observed before aborting
+}
+
+func (e *BlockedError) Error() string {
+	return fmt.Sprintf("prober: fuzz aborted: %d responses answered HTTP %d (WAF or rate limit)", e.Sampled, e.Status)
+}
+
+// fuzzMonitor tallies interesting response statuses during a sweep and flips
+// to a stopped state once a single wall status dominates the sample window.
+type fuzzMonitor struct {
+	mu      sync.Mutex
+	sampled map[int]int
+	walled  bool
+	status  int
+}
+
+func newFuzzMonitor() *fuzzMonitor { return &fuzzMonitor{sampled: make(map[int]int)} }
+
+// observe records an interesting status and reports whether the sweep may
+// continue. Diversity (two or more distinct statuses) permanently disarms the
+// abort so mixed-result sites are never cut short.
+func (m *fuzzMonitor) observe(status int) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.walled {
+		return false
+	}
+	m.sampled[status]++
+	if len(m.sampled) != 1 {
+		return true // statuses vary: normal site, never abort
+	}
+	total := m.sampled[status]
+	if total < fuzzAbortSample {
+		return true
+	}
+	switch status {
+	case http.StatusForbidden, http.StatusUnauthorized:
+		m.walled = true
+		m.status = status
+		return false
+	default:
+		return true
+	}
+}
+
+// stopped reports whether the sweep has been walled off.
+func (m *fuzzMonitor) stopped() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.walled
+}
+
+// err returns the sentinel error when the sweep was aborted, nil otherwise.
+func (m *fuzzMonitor) err() error {
+	if !m.stopped() {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	total := 0
+	for _, c := range m.sampled {
+		total += c
+	}
+	return &BlockedError{Status: m.status, Sampled: total}
+}
 
 // FuzzEligible reports whether a probed web app should be directory-fuzzed.
 // Live apps are those that answered 200 or 403 during the probe phase.
@@ -67,10 +145,14 @@ func Fuzz(ctx context.Context, baseURL string, words []string, opts Options, wor
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	mon := newFuzzMonitor()
 	hits := make([]models.FuzzHit, 0, 32)
 
 	for _, word := range words {
 		if ctx.Err() != nil {
+			break
+		}
+		if mon.stopped() {
 			break
 		}
 		word := word
@@ -95,6 +177,9 @@ func Fuzz(ctx context.Context, baseURL string, words []string, opts Options, wor
 			if !isInterestingFuzzStatus(hit.StatusCode) {
 				return
 			}
+			if !mon.observe(hit.StatusCode) {
+				return
+			}
 			if isWildcardHit(hit, baseline) {
 				return
 			}
@@ -112,6 +197,9 @@ func Fuzz(ctx context.Context, baseURL string, words []string, opts Options, wor
 		}()
 	}
 	wg.Wait()
+	if err := mon.err(); err != nil {
+		return nil, err
+	}
 
 	sort.Slice(hits, func(i, j int) bool {
 		if hits[i].Path == hits[j].Path {
@@ -481,6 +569,7 @@ func runFuzzBatch(ctx context.Context, client *http.Client, opts Options, dirURL
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	mon := newFuzzMonitor()
 	var hits []models.FuzzHit
 	var children []string
 
@@ -488,6 +577,9 @@ func runFuzzBatch(ctx context.Context, client *http.Client, opts Options, dirURL
 		if ctx.Err() != nil {
 			wg.Wait()
 			return hits, children, ctx.Err()
+		}
+		if mon.stopped() {
+			break
 		}
 		select {
 		case <-ctx.Done():
@@ -504,6 +596,9 @@ func runFuzzBatch(ctx context.Context, client *http.Client, opts Options, dirURL
 				return
 			}
 			if !isInterestingFuzzStatus(probe.status) {
+				return
+			}
+			if !mon.observe(probe.status) {
 				return
 			}
 			if isWildcardProbe(probe, baseline) {
@@ -531,7 +626,7 @@ func runFuzzBatch(ctx context.Context, client *http.Client, opts Options, dirURL
 		}(word)
 	}
 	wg.Wait()
-	return hits, children, nil
+	return hits, children, mon.err()
 }
 
 // isRedirectStatus reports whether a status code is a redirect worth following
