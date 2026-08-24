@@ -55,6 +55,19 @@ func FuzzEligible(status int) bool {
 	return intprober.FuzzEligible(status)
 }
 
+// FuzzEligibleWith401 reports fuzz eligibility, optionally accepting 401-gated apps.
+func FuzzEligibleWith401(status int, allowUnauthorized bool) bool {
+	return intprober.FuzzEligibleWith401(status, allowUnauthorized)
+}
+
+// FuzzConfig drives extension expansion and recursive directory descent.
+type FuzzConfig = intprober.FuzzConfig
+
+// FuzzWithConfig runs extension-aware, optionally recursive content discovery.
+func FuzzWithConfig(ctx context.Context, cfg FuzzConfig) ([]models.FuzzHit, error) {
+	return intprober.FuzzWithConfig(ctx, cfg)
+}
+
 // Fuzz runs concurrent path discovery against a live web origin.
 func Fuzz(ctx context.Context, baseURL string, words []string, opts Options, workers int) ([]models.FuzzHit, error) {
 	return intprober.Fuzz(ctx, baseURL, words, opts, workers)

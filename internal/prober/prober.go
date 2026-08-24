@@ -11,6 +11,7 @@ import (
 
 	"github.com/Lost-illusion69/recongo/internal/mmh3"
 	"github.com/Lost-illusion69/recongo/internal/origin"
+	recsecrets "github.com/Lost-illusion69/recongo/internal/secrets"
 	"github.com/Lost-illusion69/recongo/models"
 )
 
@@ -46,6 +47,13 @@ func Probe(host string, opts Options) (*models.Result, error) {
 	bodies := []string{pageHTML}
 	bodies = append(bodies, jsBodies...)
 	result.Endpoints = MineEndpoints(bodies...)
+
+	if opts.ScanSecrets {
+		result.Secrets = scanBodies(pageHTML, jsBodies)
+		if opts.Verbose {
+			fmt.Fprintf(os.Stderr, "  [secrets] %s: %d credential candidate(s) scanned\n", host, len(result.Secrets))
+		}
+	}
 
 	if opts.Verbose {
 		fmt.Fprintf(os.Stderr, "  [js] %s: %d script ref(s), fetched %d bundle(s), mined %d endpoint(s)\n",
@@ -192,4 +200,31 @@ func ensureSliceFields(r *models.Result) {
 	if r.FuzzResults == nil {
 		r.FuzzResults = []models.FuzzHit{}
 	}
+	if r.Secrets == nil {
+		r.Secrets = []models.SecretFinding{}
+	}
+}
+
+// scanBodies runs credential detection over the page and any fetched JS, then
+// maps the redacted findings onto the shared model type.
+func scanBodies(pageHTML string, jsBodies []string) []models.SecretFinding {
+	inputs := []recsecrets.ScanInput{{Name: "html", Body: pageHTML}}
+	for i, b := range jsBodies {
+		inputs = append(inputs, recsecrets.ScanInput{Name: fmt.Sprintf("js/%d", i), Body: b})
+	}
+	raw := recsecrets.Scan(inputs...)
+	if len(raw) == 0 {
+		return []models.SecretFinding{}
+	}
+	out := make([]models.SecretFinding, 0, len(raw))
+	for _, f := range raw {
+		out = append(out, models.SecretFinding{
+			Kind:       f.Kind,
+			Confidence: string(f.Confidence),
+			Value:      f.Value,
+			Source:     f.Source,
+			Context:    f.Context,
+		})
+	}
+	return out
 }

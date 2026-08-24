@@ -278,3 +278,336 @@ func dedupeFuzzHits(hits []models.FuzzHit) []models.FuzzHit {
 func noncePath() string {
 	return fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
 }
+
+// ---------------------------------------------------------------------------
+// Extension expansion and recursive content discovery.
+// ---------------------------------------------------------------------------
+
+// FuzzConfig controls extension expansion and optional recursive directory
+// descent. Depth=1 is a single flat pass (behavioural superset of Fuzz).
+type FuzzConfig struct {
+	BaseURL    string
+	Words      []string
+	Extensions []string // optional extension variants probed for directory entries
+	Opts       Options
+	Workers    int
+	Depth      int // maximum directory recursion depth (1 = root only)
+	MaxDirs    int // cap on total directories scanned across all levels
+}
+
+func (c FuzzConfig) withDefaults() FuzzConfig {
+	if c.BaseURL == "" {
+		return c
+	}
+	c.BaseURL = strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
+	if c.Depth <= 0 {
+		c.Depth = 1
+	}
+	if c.MaxDirs <= 0 {
+		c.MaxDirs = 64
+	}
+	if c.Workers <= 0 {
+		c.Workers = defaultFuzzWorkers
+	}
+	return c
+}
+
+// fuzzProbe is the minimal response surface the discovery loop consumes.
+type fuzzProbe struct {
+	status   int
+	length   int64
+	location string
+}
+
+// fuzzProbeRequest issues a single GET and records status, body length, and
+// any redirect Location so recursive discovery can follow directory hits.
+func fuzzProbeRequest(ctx context.Context, client *http.Client, opts Options, rawURL string) (fuzzProbe, error) {
+	applyDelay(opts.Delay)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return fuzzProbe{}, err
+	}
+	applyHeaders(req, opts)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fuzzProbe{}, err
+	}
+	defer resp.Body.Close()
+
+	body, err := readLimitedBody(resp.Body, fuzzBodyLimit)
+	if err != nil {
+		return fuzzProbe{}, err
+	}
+
+	cl := resp.ContentLength
+	if cl < 0 {
+		cl = int64(len(body))
+	}
+
+	host := req.URL.Hostname()
+	if shouldRetryStatus(resp.StatusCode) {
+		recordRateLimit(host)
+	} else {
+		resetBackoff(host)
+	}
+
+	return fuzzProbe{
+		status:   resp.StatusCode,
+		length:   cl,
+		location: resp.Header.Get("Location"),
+	}, nil
+}
+
+// ExpandExtensions grows each directory-like word by appending the supplied
+// extensions to expose backup/source/dot files, e.g. /admin -> /admin.bak.
+// Words whose final segment already carries a file extension are left as-is.
+func ExpandExtensions(words []string, exts []string) []string {
+	out := make([]string, 0, len(words)*(len(exts)+1))
+	for _, w := range words {
+		out = append(out, w)
+		seg := strings.TrimRight(w, "/")
+		if i := strings.LastIndex(seg, "/"); i >= 0 {
+			seg = seg[i+1:]
+		}
+		if strings.Contains(seg, ".") {
+			continue
+		}
+		base := strings.TrimRight(w, "/")
+		for _, e := range exts {
+			e = strings.TrimSpace(e)
+			e = strings.Trim(e, ".")
+			if e == "" {
+				continue
+			}
+			out = append(out, base+"."+e)
+		}
+	}
+	return out
+}
+
+// FuzzWithConfig runs extension-aware, optionally recursive content discovery.
+func FuzzWithConfig(ctx context.Context, cfg FuzzConfig) ([]models.FuzzHit, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	cfg = cfg.withDefaults()
+	if cfg.BaseURL == "" {
+		return nil, fmt.Errorf("prober: empty fuzz base URL")
+	}
+	if len(cfg.Words) == 0 {
+		return nil, fmt.Errorf("prober: empty fuzz wordlist")
+	}
+	parsed, err := url.Parse(cfg.BaseURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return nil, fmt.Errorf("prober: invalid fuzz base URL %q", cfg.BaseURL)
+	}
+
+	words := cfg.Words
+	if len(cfg.Extensions) > 0 {
+		words = ExpandExtensions(words, cfg.Extensions)
+	}
+
+	opts := cfg.Opts.withDefaults()
+	client, err := newClient(opts)
+	if err != nil {
+		return nil, err
+	}
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+
+	// Root the crawl at scheme://host[/path] with a trailing slash.
+	origin := parsed.Scheme + "://" + parsed.Host
+	pth := strings.Trim(parsed.Path, "/")
+	rootURL := origin + "/"
+	rootRel := ""
+	if pth != "" {
+		rootURL += pth + "/"
+		rootRel = pth + "/"
+	}
+	recursive := cfg.Depth > 1
+
+	var all []models.FuzzHit
+	visited := make(map[string]struct{})
+	visited[rootRel] = struct{}{}
+	frontier := []string{rootURL}
+	dirsUsed := 1
+
+	for depth := 1; depth <= cfg.Depth && len(frontier) > 0; depth++ {
+		var next []string
+		for _, dirURL := range frontier {
+			hits, children, berr := runFuzzBatch(ctx, client, opts, dirURL, origin, words, recursive, cfg.Workers)
+			if berr != nil {
+				return all, berr
+			}
+			for _, h := range hits {
+				all = append(all, h)
+			}
+			for _, child := range children {
+				rel := relPathOf(child, origin)
+				if rel == "" {
+					continue
+				}
+				if _, ok := visited[rel]; ok {
+					continue
+				}
+				if dirsUsed >= cfg.MaxDirs {
+					continue
+				}
+				visited[rel] = struct{}{}
+				dirsUsed++
+				next = append(next, child)
+			}
+		}
+		frontier = next
+	}
+
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].Path == all[j].Path {
+			return all[i].StatusCode < all[j].StatusCode
+		}
+		return all[i].Path < all[j].Path
+	})
+	return dedupeFuzzHits(all), nil
+}
+
+// runFuzzBatch fuzzes one directory URL, returning any hits and the child
+// directories discovered beneath it.
+func runFuzzBatch(ctx context.Context, client *http.Client, opts Options, dirURL, origin string, words []string, recursive bool, workers int) ([]models.FuzzHit, []string, error) {
+	dirBase := strings.TrimRight(dirURL, "/")
+	baseline, _ := fuzzProbeRequest(ctx, client, opts, dirBase+"/recongo-fuzz-"+noncePath())
+
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var hits []models.FuzzHit
+	var children []string
+
+	for _, word := range words {
+		if ctx.Err() != nil {
+			wg.Wait()
+			return hits, children, ctx.Err()
+		}
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return hits, children, ctx.Err()
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(word string) {
+			defer func() { <-sem; wg.Done() }()
+			target := dirBase + word
+			probe, reqErr := fuzzProbeRequest(ctx, client, opts, target)
+			if reqErr != nil {
+				return
+			}
+			if !isInterestingFuzzStatus(probe.status) {
+				return
+			}
+			if isWildcardProbe(probe, baseline) {
+				return
+			}
+			normalized := normalizeFuzzPath(target)
+			hit := models.FuzzHit{
+				Path:          normalized,
+				URL:           target,
+				StatusCode:    probe.status,
+				ContentLength: probe.length,
+				Kind:          classifyFuzzPath(normalized),
+			}
+			mu.Lock()
+			hits = append(hits, hit)
+			if recursive {
+				if child := suggestedChildDir(dirURL, origin, target, probe); child != "" {
+					children = append(children, child)
+				}
+			}
+			mu.Unlock()
+			if opts.Verbose {
+				fmt.Fprintf(os.Stderr, "  [fuzz] %d  %s  (%s)\n", hit.StatusCode, hit.URL, hit.Kind)
+			}
+		}(word)
+	}
+	wg.Wait()
+	return hits, children, nil
+}
+
+// isRedirectStatus reports whether a status code is a redirect worth following
+// during recursive content discovery.
+func isRedirectStatus(code int) bool {
+	switch code {
+	case http.StatusMovedPermanently,
+		http.StatusFound,
+		http.StatusSeeOther,
+		http.StatusTemporaryRedirect,
+		http.StatusPermanentRedirect:
+		return true
+	default:
+		return false
+	}
+}
+
+// suggestedChildDir detects endpoints discovered under dirURL that deserve a
+// recursive pass: trailing-slash directory entries (2xx/3xx) and same-origin
+// redirects that land on a directory path.
+func suggestedChildDir(dirURL, origin, target string, probe fuzzProbe) string {
+	var candidate string
+	if strings.HasSuffix(target, "/") && probe.status >= 200 && probe.status < 400 {
+		candidate = target
+	} else if isRedirectStatus(probe.status) {
+		loc := strings.TrimSpace(probe.location)
+		if strings.HasPrefix(loc, "/") {
+			if u, err := url.Parse(loc); err == nil {
+				candidate = origin + u.Path
+			}
+		}
+	}
+	return containedChildDir(candidate, dirURL)
+}
+
+// containedChildDir accepts a child only when it is strictly below the parent
+// path (guarding against loops and sibling drift) and carries a trailing slash.
+func containedChildDir(child, parent string) string {
+	child = strings.TrimRight(child, "/") + "/"
+	parent = strings.TrimRight(parent, "/") + "/"
+	if child == parent {
+		return ""
+	}
+	if !strings.HasPrefix(child, parent) {
+		return ""
+	}
+	return child
+}
+
+// relPathOf reduces an absolute child URL to a root-relative key used by the
+// visited set, so equivalent paths are never rescanned.
+func relPathOf(child, origin string) string {
+	rest := strings.TrimPrefix(child, origin)
+	return strings.Trim(rest, "/")
+}
+
+// FuzzEligibleWith401 reports whether a probed app is worth fuzzing, optionally
+// accepting HTTP 401 (auth-gated) apps whose responses still vary by resource.
+func FuzzEligibleWith401(status int, allowUnauthorized bool) bool {
+	if status == http.StatusOK || status == http.StatusForbidden {
+		return true
+	}
+	return allowUnauthorized && status == http.StatusUnauthorized
+}
+
+// isWildcardProbe drops responses that match the directory catch-all baseline.
+func isWildcardProbe(hit, base fuzzProbe) bool {
+	if base.status == 0 {
+		return false
+	}
+	if hit.status != base.status {
+		return false
+	}
+	delta := hit.length - base.length
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= fuzzBaselineSlack
+}

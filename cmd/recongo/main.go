@@ -4,7 +4,9 @@
 //
 //	recongo -domain example.com [-workers 50] [-dns-workers 100] [-timeout 5s] \
 //	  [-probe] [-mutate] [-cluster] [-fuzz] [-wordlist path] [-max-mutations 500] \
-//	  [-probe-workers 50] [-http-timeout 5s] [-o results.jsonl] [-format json]
+//	  [-probe-workers 50] [-http-timeout 5s] [-o results.jsonl] [-format json] \
+//	  [-ext bak,old,swp] [-recursive] [-fuzz-depth 2] [-fuzz-401] \
+//	  [-secrets=true]
 //
 // The binary exits with code 0 on success, 1 on usage/config errors,
 // and 2 when terminated by signal.
@@ -73,6 +75,12 @@ type config struct {
 	discordWebhook string
 	fuzz           bool
 	wordlist       string
+	fuzzExtRaw     string
+	fuzzExt        []string
+	recursive      bool
+	fuzzDepth      int
+	fuzz401        bool
+	secrets        bool
 }
 
 func parseFlags(args []string) (*config, error) {
@@ -106,6 +114,11 @@ func parseFlags(args []string) (*config, error) {
 	fs.StringVar(&cfg.discordWebhook, "discord-webhook", "", "Discord webhook URL for scan completion alerts")
 	fs.BoolVar(&cfg.fuzz, "fuzz", false, "Enable directory/endpoint fuzzing against live web apps (HTTP 200/403)")
 	fs.StringVar(&cfg.wordlist, "wordlist", prober.DefaultWordlistPath(), "Path to content-discovery wordlist (used with -fuzz)")
+	fs.StringVar(&cfg.fuzzExtRaw, "ext", "", "Comma-separated extensions to fuzz for backup/dot files (e.g. bak,old,swp)")
+	recursiveFlag := fs.Bool("recursive", false, "Recursively fuzz directories discovered during content discovery")
+	fs.IntVar(&cfg.fuzzDepth, "fuzz-depth", 2, "Maximum recursive directory depth (with -recursive)")
+	fuzz401Flag := fs.Bool("fuzz-401", false, "Also fuzz web apps that answer HTTP 401 (auth-gated surfaces)")
+	secretsFlag := fs.Bool("secrets", true, "Scan fetched HTML/JS for exposed credentials (redacted findings)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -117,6 +130,17 @@ func parseFlags(args []string) (*config, error) {
 	cfg.archive = *archiveFlag
 	cfg.findOrigin = *findOriginFlag
 	cfg.takeover = *takeoverFlag
+	cfg.recursive = *recursiveFlag
+	cfg.fuzz401 = *fuzz401Flag
+	cfg.secrets = *secretsFlag
+
+	for _, e := range strings.Split(cfg.fuzzExtRaw, ",") {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		cfg.fuzzExt = append(cfg.fuzzExt, e)
+	}
 
 	return cfg, nil
 }
@@ -329,6 +353,7 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 		OriginFindings: originFindings,
 		Headers:        probeHeaders,
 		ProxyURL:       cfg.proxy,
+		ScanSecrets:    cfg.secrets,
 	}
 
 	// Stage 4: HTTP probe alive hosts.
@@ -360,8 +385,20 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 			if cfg.cluster {
 				clusterer.Tag(&a)
 			}
-			if cfg.fuzz && len(fuzzWords) > 0 && prober.FuzzEligible(a.StatusCode) {
-				hits, ferr := prober.Fuzz(ctx, a.URL, fuzzWords, probeOpts, cfg.probeWorkers)
+			if cfg.fuzz && len(fuzzWords) > 0 && prober.FuzzEligibleWith401(a.StatusCode, cfg.fuzz401) {
+				fuzzCfg := prober.FuzzConfig{
+					BaseURL:    a.URL,
+					Words:      fuzzWords,
+					Extensions: cfg.fuzzExt,
+					Opts:       probeOpts,
+					Workers:    cfg.probeWorkers,
+				}
+				if cfg.recursive {
+					fuzzCfg.Depth = cfg.fuzzDepth
+				} else {
+					fuzzCfg.Depth = 1
+				}
+				hits, ferr := prober.FuzzWithConfig(ctx, fuzzCfg)
 				if ferr != nil {
 					log.DebugContext(ctx, "fuzz failed",
 						slog.String("host", a.Host),
@@ -528,6 +565,11 @@ func main() {
 		slog.Bool("takeover", cfg.takeover),
 		slog.Bool("fuzz", cfg.fuzz),
 		slog.String("wordlist", cfg.wordlist),
+		slog.String("fuzz-ext", strings.Join(cfg.fuzzExt, ",")),
+		slog.Bool("recursive", cfg.recursive),
+		slog.Int("fuzz-depth", cfg.fuzzDepth),
+		slog.Bool("fuzz-401", cfg.fuzz401),
+		slog.Bool("secrets", cfg.secrets),
 	)
 	fmt.Fprintf(os.Stderr, "\n  ReconGO %s — discovery phase\n  Target: %s\n\n", version, cfg.domain)
 

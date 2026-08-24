@@ -135,6 +135,11 @@ go test -v -race ./...
 | `-archive` | bool | `true` | Enable Wayback + OTX historical archive mining |
 | `-find-origin` | bool | `true` | Enable MX/SPF origin IP & CDN bypass correlation |
 | `-fuzz` | bool | `false` | Directory/endpoint fuzzing against live apps (HTTP 200/403) |
+| `-ext` | string | *(none)* | Comma-separated extensions appended during fuzzing to expose backup/dot files (`bak,old,swp`) |
+| `-recursive` | bool | `false` | Recursively fuzz directories discovered during content discovery |
+| `-fuzz-depth` | int | `2` | Maximum recursive directory depth (with `-recursive`) |
+| `-fuzz-401` | bool | `false` | Also fuzz web apps that answer HTTP 401 (auth-gated surfaces) |
+| `-secrets` | bool | `true` | Scan fetched HTML/JS for exposed credentials (AWS/GitHub/Slack keys, webhooks, private keys). Findings are redacted |
 | `-wordlist` | string | `$HOME/bugbounty/wordlists/SecLists/Discovery/Web-Content/raft-medium-directories-lowercase.txt` | Wordlist used when `-fuzz` is enabled |
 | `-format` | string | `text` | Output format: `text`, `json`, or `csv` |
 | `-o` | string | *(stdout)* | Write structured results to file |
@@ -196,6 +201,24 @@ recongo -domain target.com \
 recongo -domain example.com -fuzz -format json -o results.jsonl
 # optional custom list:
 recongo -domain example.com -fuzz -wordlist ./lists/api-paths.txt
+```
+
+### Backup-file discovery + recursive crawl
+
+```bash
+# expose backup/source files like /admin.bak and descend into found dirs
+recongo -domain example.com -fuzz \
+  -ext bak,old,swp,orig \
+  -recursive -fuzz-depth 2 \
+  -format json -o results.jsonl
+```
+
+### Exposed-credential sweep (on by default)
+
+```bash
+# secrets scanning runs automatically over fetched HTML/JS; disable with -secrets=false
+recongo -domain example.com -format json -o results.jsonl \
+  | jq 'select(.secrets | length > 0) | {host: .asset.host, secrets: .secrets}'
 ```
 
 ### DNS-only mode (no HTTP probe)
