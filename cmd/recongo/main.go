@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -400,10 +401,16 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 				}
 				hits, ferr := prober.FuzzWithConfig(ctx, fuzzCfg)
 				if ferr != nil {
-					log.DebugContext(ctx, "fuzz failed",
-						slog.String("host", a.Host),
-						slog.String("error", ferr.Error()),
-					)
+					var blk *prober.BlockedError
+					if errors.As(ferr, &blk) {
+						fmt.Fprintf(os.Stderr, "  [fuzz] %-48s  ABORTED after %d probes — every path answered HTTP %d (WAF or rate limit); raise -delay or lower -probe-workers\n",
+							a.Host, blk.Sampled, blk.Status)
+					} else {
+						log.DebugContext(ctx, "fuzz failed",
+							slog.String("host", a.Host),
+							slog.String("error", ferr.Error()),
+						)
+					}
 				} else {
 					a.FuzzResults = hits
 					a.Endpoints = prober.MergeFuzzIntoEndpoints(a.Endpoints, hits)

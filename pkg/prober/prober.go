@@ -63,6 +63,10 @@ func FuzzEligibleWith401(status int, allowUnauthorized bool) bool {
 // FuzzConfig drives extension expansion and recursive directory descent.
 type FuzzConfig = intprober.FuzzConfig
 
+// BlockedError reports a fuzz sweep aborted because every sampled response
+// carried one identical wall status (WAF or rate limiter).
+type BlockedError = intprober.BlockedError
+
 // FuzzWithConfig runs extension-aware, optionally recursive content discovery.
 func FuzzWithConfig(ctx context.Context, cfg FuzzConfig) ([]models.FuzzHit, error) {
 	return intprober.FuzzWithConfig(ctx, cfg)
