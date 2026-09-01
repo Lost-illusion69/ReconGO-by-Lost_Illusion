@@ -30,6 +30,12 @@ func Probe(host string, opts Options) (*AssetResult, error) {
 	return intprober.Probe(host, opts)
 }
 
+// FetchBody performs a best-effort GET (HTTPS then HTTP) against host and
+// returns the response body as text, independent of Probe's own request.
+func FetchBody(host string, opts Options) (string, error) {
+	return intprober.FetchBody(host, opts)
+}
+
 // ExtractTitle exposes HTML title parsing for legacy tests.
 func ExtractTitle(body []byte) string {
 	return intprober.ExtractTitle(body)

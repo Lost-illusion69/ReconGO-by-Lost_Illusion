@@ -75,3 +75,52 @@ func TestProbeFaviconFallbackPath(t *testing.T) {
 		t.Errorf("FaviconMMH3 = %d, want fallback hash", result.FaviconMMH3)
 	}
 }
+
+func TestProbeCORSDetectsReflectedOriginWithCredentials(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if o := r.Header.Get("Origin"); o != "" {
+			w.Header().Set("Access-Control-Allow-Origin", o)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+		fmt.Fprint(w, "<html><body>ok</body></html>")
+	}))
+	defer srv.Close()
+
+	host := strings.TrimPrefix(srv.URL, "http://")
+	result, err := Probe(host, Options{Timeout: 3 * time.Second, ScanCORS: true})
+	if err != nil {
+		t.Fatalf("Probe() error: %v", err)
+	}
+	if len(result.CORS) == 0 {
+		t.Fatal("CORS = empty, want at least one finding for a host reflecting Origin with credentials")
+	}
+	found := false
+	for _, f := range result.CORS {
+		if f.Severity == "high" && f.AllowCredentials {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("CORS = %+v, want a high-severity credentialed finding", result.CORS)
+	}
+}
+
+func TestProbeCORSDisabledLeavesFindingsEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if o := r.Header.Get("Origin"); o != "" {
+			w.Header().Set("Access-Control-Allow-Origin", o)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+		fmt.Fprint(w, "<html><body>ok</body></html>")
+	}))
+	defer srv.Close()
+
+	host := strings.TrimPrefix(srv.URL, "http://")
+	result, err := Probe(host, Options{Timeout: 3 * time.Second, ScanCORS: false})
+	if err != nil {
+		t.Fatalf("Probe() error: %v", err)
+	}
+	if len(result.CORS) != 0 {
+		t.Errorf("CORS = %+v, want empty when ScanCORS is false", result.CORS)
+	}
+}

@@ -229,9 +229,13 @@ func (wr *Writer) writeJSON(a prober.AssetResult) error {
 		CDNProvider:        a.CDNProvider,
 		PotentialOriginIPs: a.PotentialOriginIPs,
 		TakeoverRisk:       a.TakeoverRisk,
+		TakeoverService:    a.TakeoverService,
 		TakeoverCNAME:      a.TakeoverCNAME,
+		TakeoverIP:         a.TakeoverIP,
+		TakeoverConfirmed:  a.TakeoverConfirmed,
 		FuzzResults:        a.FuzzResults,
 		Secrets:            a.Secrets,
+		CORS:               a.CORS,
 	}
 	if dto.Asset.IPs == nil {
 		dto.Asset.IPs = []string{}
@@ -254,6 +258,9 @@ func (wr *Writer) writeJSON(a prober.AssetResult) error {
 	if dto.Secrets == nil {
 		dto.Secrets = []models.SecretFinding{}
 	}
+	if dto.CORS == nil {
+		dto.CORS = []models.CORSFinding{}
+	}
 
 	enc := json.NewEncoder(wr.w)
 	enc.SetEscapeHTML(false)
@@ -266,8 +273,8 @@ func (wr *Writer) writeCSV(a prober.AssetResult) error {
 			"Host", "IPs", "URL", "StatusCode", "Title", "Server", "ContentLength",
 			"ResponseTime", "FaviconMMH3", "BodyMMH3", "ClusterTag", "Endpoints",
 			"HistoricalURLs", "DiscoveredParams", "IsCDNProxied", "CDNProvider",
-			"PotentialOriginIPs", "TakeoverRisk", "TakeoverCNAME", "FuzzResults",
-			"Secrets",
+			"PotentialOriginIPs", "TakeoverRisk", "TakeoverService", "TakeoverCNAME",
+			"TakeoverIP", "TakeoverConfirmed", "FuzzResults", "Secrets", "CORS",
 		}); err != nil {
 			return err
 		}
@@ -284,6 +291,11 @@ func (wr *Writer) writeCSV(a prober.AssetResult) error {
 	secretHits := make([]string, 0, len(a.Secrets))
 	for _, s := range a.Secrets {
 		secretHits = append(secretHits, fmt.Sprintf("%s:%s", s.Kind, s.Value))
+	}
+
+	corsHits := make([]string, 0, len(a.CORS))
+	for _, c := range a.CORS {
+		corsHits = append(corsHits, fmt.Sprintf("%s:%s", c.Severity, c.SentOrigin))
 	}
 
 	return wr.csvW.Write([]string{
@@ -305,9 +317,13 @@ func (wr *Writer) writeCSV(a prober.AssetResult) error {
 		a.CDNProvider,
 		strings.Join(a.PotentialOriginIPs, ";"),
 		fmt.Sprintf("%t", a.TakeoverRisk),
+		a.TakeoverService,
 		a.TakeoverCNAME,
+		a.TakeoverIP,
+		fmt.Sprintf("%t", a.TakeoverConfirmed),
 		strings.Join(fuzzPaths, ";"),
 		strings.Join(secretHits, ";"),
+		strings.Join(corsHits, ";"),
 	})
 }
 
@@ -322,9 +338,13 @@ type jsonResult struct {
 	CDNProvider        string                 `json:"cdn_provider,omitempty"`
 	PotentialOriginIPs []string               `json:"potential_origin_ips"`
 	TakeoverRisk       bool                   `json:"takeover_risk,omitempty"`
+	TakeoverService    string                 `json:"takeover_service,omitempty"`
 	TakeoverCNAME      string                 `json:"takeover_cname,omitempty"`
+	TakeoverIP         string                 `json:"takeover_ip,omitempty"`
+	TakeoverConfirmed  bool                   `json:"takeover_confirmed,omitempty"`
 	FuzzResults        []models.FuzzHit       `json:"fuzz_results"`
 	Secrets            []models.SecretFinding `json:"secrets"`
+	CORS               []models.CORSFinding   `json:"cors"`
 }
 
 type assetBlock struct {
@@ -469,7 +489,15 @@ func renderResultCard(a prober.AssetResult, color bool) string {
 
 	if a.TakeoverRisk {
 		b.WriteString("├─ Takeover ───────────────────────────────────────────────────────────────────┤\n")
-		b.WriteString(fmt.Sprintf("│    RISK          CNAME → %-52s │\n", truncate(a.TakeoverCNAME, 52)))
+		status := "UNCONFIRMED — verify by hand"
+		if a.TakeoverConfirmed {
+			status = "CONFIRMED"
+		}
+		target := a.TakeoverCNAME
+		if target == "" {
+			target = a.TakeoverIP
+		}
+		b.WriteString(fmt.Sprintf("│    %-8s      %-59s │\n", status, truncate(a.TakeoverService+" -> "+target, 59)))
 	}
 
 	if len(a.FuzzResults) > 0 {
@@ -480,6 +508,18 @@ func renderResultCard(a prober.AssetResult, color bool) string {
 				break
 			}
 			line := fmt.Sprintf("[%d] %-10s %s", h.StatusCode, h.Kind, h.Path)
+			b.WriteString(fmt.Sprintf("│    %-73s │\n", truncate(line, 73)))
+		}
+	}
+
+	if len(a.CORS) > 0 {
+		b.WriteString("├─ CORS ──────────────────────────────────────────────────────────────────────┤\n")
+		for i, c := range a.CORS {
+			if i >= 6 {
+				b.WriteString(fmt.Sprintf("│    … +%d more                                                                │\n", len(a.CORS)-6))
+				break
+			}
+			line := fmt.Sprintf("[%s] origin=%s creds=%t", strings.ToUpper(c.Severity), c.SentOrigin, c.AllowCredentials)
 			b.WriteString(fmt.Sprintf("│    %-73s │\n", truncate(line, 73)))
 		}
 	}

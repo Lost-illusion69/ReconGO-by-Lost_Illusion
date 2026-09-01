@@ -2,6 +2,7 @@ package origin
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -59,21 +60,74 @@ func TestLooksLikeIP(t *testing.T) {
 	}
 }
 
-func TestCnameMatchesSink(t *testing.T) {
+func TestMatchCNAME(t *testing.T) {
 	cases := []struct {
-		target string
-		want   bool
+		target      string
+		wantService string // empty means no match expected
 	}{
-		{"victim.github.io", true},
-		{"app.herokuapp.com", false},
-		{"cdn.cloudfront.net", true},
-		{"safe.example.com", false},
-		{"pages.github.io", true},
+		{"victim.github.io", "GitHub Pages"},
+		{"app.herokuapp.com", "Heroku"},
+		{"safe.example.com", ""},
+		{"pages.github.io", "GitHub Pages"},
+		{"bucket.s3.amazonaws.com", "AWS S3"},
 	}
 	for _, tc := range cases {
-		if got := cnameMatchesSink(tc.target); got != tc.want {
-			t.Errorf("cnameMatchesSink(%q) = %v want %v", tc.target, got, tc.want)
+		fp := matchCNAME(tc.target)
+		got := ""
+		if fp != nil {
+			got = fp.Service
 		}
+		if got != tc.wantService {
+			t.Errorf("matchCNAME(%q) = %q, want %q", tc.target, got, tc.wantService)
+		}
+	}
+}
+
+func TestMatchIP(t *testing.T) {
+	if fp := matchIP("23.236.62.147"); fp == nil || fp.Service != "Wix" {
+		t.Errorf("matchIP(wix ip) = %+v, want Wix match", fp)
+	}
+	if fp := matchIP("1.2.3.4"); fp != nil {
+		t.Errorf("matchIP(unrelated ip) = %+v, want no match", fp)
+	}
+}
+
+func TestConfirmFindingConfirmedWhenBodyMatches(t *testing.T) {
+	fp := &TakeoverFingerprint{Service: "GitHub Pages", BodyContains: []string{"There isn't a GitHub Pages site here"}}
+	fetch := func(ctx context.Context, host string) (string, error) {
+		return "<html>There isn't a GitHub Pages site here.</html>", nil
+	}
+	finding := confirmFinding(context.Background(), "victim.github.io", fp, "victim.github.io", "", fetch)
+	if !finding.Risk || !finding.Confirmed {
+		t.Errorf("confirmFinding() = %+v, want Risk=true Confirmed=true", finding)
+	}
+}
+
+func TestConfirmFindingUnconfirmedWhenBodyDoesNotMatch(t *testing.T) {
+	fp := &TakeoverFingerprint{Service: "GitHub Pages", BodyContains: []string{"There isn't a GitHub Pages site here"}}
+	fetch := func(ctx context.Context, host string) (string, error) {
+		return "<html>My perfectly normal live site</html>", nil
+	}
+	finding := confirmFinding(context.Background(), "victim.github.io", fp, "victim.github.io", "", fetch)
+	if finding.Risk {
+		t.Errorf("confirmFinding() = %+v, want Risk=false when the live page doesn't confirm", finding)
+	}
+}
+
+func TestConfirmFindingUnconfirmedWhenFetchUnavailable(t *testing.T) {
+	fp := &TakeoverFingerprint{Service: "GitHub Pages", BodyContains: []string{"There isn't a GitHub Pages site here"}}
+
+	// nil fetch: DNS-only mode, still a lead but never confirmed.
+	finding := confirmFinding(context.Background(), "victim.github.io", fp, "victim.github.io", "", nil)
+	if !finding.Risk || finding.Confirmed {
+		t.Errorf("confirmFinding(nil fetch) = %+v, want Risk=true Confirmed=false", finding)
+	}
+
+	// fetch errors: still surfaced as an unconfirmed lead, not dropped.
+	erroring := func(ctx context.Context, host string) (string, error) { return "", errors.New("fetch failed") }
+	finding = confirmFinding(context.Background(), "victim.github.io", fp, "victim.github.io", "", erroring)
+	if !finding.Risk || finding.Confirmed {
+		t.Errorf("confirmFinding(erroring fetch) = %+v, want Risk=true Confirmed=false", finding)
 	}
 }
 

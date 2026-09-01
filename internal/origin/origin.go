@@ -15,13 +15,9 @@ import (
 )
 
 var (
-	spfIP4Re  = regexp.MustCompile(`(?i)ip4:([0-9./]+)`)
-	spfIP6Re  = regexp.MustCompile(`(?i)ip6:([0-9a-f:/]+)`)
-	ipv4Re    = regexp.MustCompile(`^\d{1,3}(\.\d{1,3}){3}$`)
-	cnameSink = map[string]struct{}{
-		"github.io": {}, "herokudns.com": {}, "azurewebsites.net": {},
-		"cloudfront.net": {}, "s3.amazonaws.com": {}, "shopify.com": {},
-	}
+	spfIP4Re = regexp.MustCompile(`(?i)ip4:([0-9./]+)`)
+	spfIP6Re = regexp.MustCompile(`(?i)ip6:([0-9a-f:/]+)`)
+	ipv4Re   = regexp.MustCompile(`^\d{1,3}(\.\d{1,3}){3}$`)
 )
 
 // Findings holds domain-level origin intelligence from DNS records.
@@ -194,29 +190,114 @@ func EnrichResult(r *models.Result, respHeader http.Header, domainFindings *Find
 	r.PotentialOriginIPs = matches
 }
 
-// TakeoverRisk checks CNAME targets against known dangling-service fingerprints.
-func TakeoverRisk(ctx context.Context, host string, r *net.Resolver) (bool, string) {
+// TakeoverFingerprint describes one dangling-service signature. See
+// takeover_fingerprints.go for the curated table and the two-factor
+// (DNS + live body) verification rationale.
+type TakeoverFingerprint struct {
+	Service       string   // human-readable service name, e.g. "Wix"
+	CNAMEContains []string // substrings matched against the lowercased resolved CNAME
+	IPPrefixes    []string // substrings matched against a resolved A-record IP (for IP-routed services with no distinguishing CNAME, e.g. Wix)
+	BodyContains  []string // case-insensitive substrings in the live response that confirm the host is actually unclaimed
+}
+
+// TakeoverFinding is the outcome of a subdomain-takeover check against a host.
+type TakeoverFinding struct {
+	Risk      bool   // true once a dangling-service signature has a real signal behind it
+	Service   string // matched fingerprint name, empty when Risk is false
+	CNAME     string // resolved CNAME target, if any
+	IP        string // matched A-record IP, set only for IP-routed matches (no CNAME involved)
+	Confirmed bool   // true when a live body fingerprint corroborated the DNS-level match;
+	// false means the DNS signal fired but confirmation could not be attempted
+	// or the live page did not match — treat as a lead to verify by hand, not a report-ready finding
+}
+
+// BodyFetcher fetches host's HTTP(S) response body for takeover fingerprint
+// confirmation. Kept injectable so this package stays HTTP-client agnostic
+// and testable; pass nil to skip live confirmation entirely (DNS-only mode).
+type BodyFetcher func(ctx context.Context, host string) (string, error)
+
+// TakeoverRisk checks host's CNAME (and, for IP-routed services, its
+// A-records) against known dangling-service fingerprints, then — when fetch
+// is provided — confirms the match against the live response body. A finding
+// is only Confirmed when both the DNS signal and the live page agree; DNS
+// alone can false-positive (the service may still be legitimately in use).
+func TakeoverRisk(ctx context.Context, host string, r *net.Resolver, fetch BodyFetcher) TakeoverFinding {
 	if r == nil {
 		r = net.DefaultResolver
 	}
-	cname, err := r.LookupCNAME(ctx, host)
-	if err != nil || cname == "" {
-		return false, ""
-	}
-	target := strings.ToLower(strings.TrimSuffix(cname, "."))
-	if cnameMatchesSink(target) {
-		return true, target
-	}
-	return false, target
-}
 
-func cnameMatchesSink(target string) bool {
-	for sink := range cnameSink {
-		if strings.Contains(target, sink) {
-			return true
+	var cname string
+	var fp *TakeoverFingerprint
+	if c, err := r.LookupCNAME(ctx, host); err == nil && c != "" {
+		cname = strings.ToLower(strings.TrimSuffix(c, "."))
+		fp = matchCNAME(cname)
+	}
+
+	var ip string
+	if fp == nil {
+		if addrs, err := r.LookupHost(ctx, host); err == nil {
+			for _, addr := range addrs {
+				if m := matchIP(addr); m != nil {
+					fp, ip = m, addr
+					break
+				}
+			}
 		}
 	}
-	return false
+
+	if fp == nil {
+		return TakeoverFinding{CNAME: cname}
+	}
+	return confirmFinding(ctx, host, fp, cname, ip, fetch)
+}
+
+// confirmFinding decides Risk/Confirmed for an already-matched fingerprint.
+// Split out from TakeoverRisk so this decision logic is testable without a
+// real DNS resolver.
+func confirmFinding(ctx context.Context, host string, fp *TakeoverFingerprint, cname, ip string, fetch BodyFetcher) TakeoverFinding {
+	finding := TakeoverFinding{Risk: true, Service: fp.Service, CNAME: cname, IP: ip}
+	if fetch == nil || len(fp.BodyContains) == 0 {
+		return finding // DNS-level signal only; caller should verify by hand
+	}
+
+	body, err := fetch(ctx, host)
+	if err != nil {
+		return finding // confirmation unavailable; still surface the DNS-level lead
+	}
+	lower := strings.ToLower(body)
+	for _, sig := range fp.BodyContains {
+		if strings.Contains(lower, strings.ToLower(sig)) {
+			finding.Confirmed = true
+			return finding
+		}
+	}
+	// Signature matched on DNS but the live page doesn't show the "unclaimed"
+	// fingerprint — most likely the service is still legitimately in use.
+	return TakeoverFinding{CNAME: cname}
+}
+
+func matchCNAME(cname string) *TakeoverFingerprint {
+	for i := range takeoverFingerprints {
+		fp := &takeoverFingerprints[i]
+		for _, pat := range fp.CNAMEContains {
+			if strings.Contains(cname, pat) {
+				return fp
+			}
+		}
+	}
+	return nil
+}
+
+func matchIP(ip string) *TakeoverFingerprint {
+	for i := range takeoverFingerprints {
+		fp := &takeoverFingerprints[i]
+		for _, pat := range fp.IPPrefixes {
+			if strings.HasPrefix(ip, pat) {
+				return fp
+			}
+		}
+	}
+	return nil
 }
 
 func looksLikeIP(s string) bool {

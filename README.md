@@ -81,6 +81,7 @@ Built on Go 1.22+ with minimal dependencies (`golang.org/x/net` for HTTP/2), Rec
 | **Webhook alerting** | `-slack-webhook` / `-discord-webhook` — scan completion notifications |
 | **In-memory JS endpoint mining** | Fetches referenced `.js` bundles and extracts API routes/parameters |
 | **Directory / content discovery** | `-fuzz` / `-wordlist` — concurrent path fuzzing of live 200/403 web apps |
+| **CORS misconfiguration detection** | `-cors` — reflects crafted attacker origins (arbitrary, null, trusted-suffix) and flags exploitable `Access-Control-Allow-Origin`/`-Credentials` combinations |
 | **Historical archive mining** | `-archive` — Wayback Machine CDX + AlienVault OTX passive DNS & URL lists |
 | **Origin IP & CDN bypass** | `-find-origin` — MX/SPF parsing, CDN detection, favicon MMH3 correlation |
 | **HTTP/2 probing** | HTTP/2 transport with HTTP/1.1 fallback via `golang.org/x/net/http2` |
@@ -140,6 +141,7 @@ go test -v -race ./...
 | `-fuzz-depth` | int | `2` | Maximum recursive directory depth (with `-recursive`) |
 | `-fuzz-401` | bool | `false` | Also fuzz web apps that answer HTTP 401 (auth-gated surfaces) |
 | `-secrets` | bool | `true` | Scan fetched HTML/JS for exposed credentials (AWS/GitHub/Slack keys, webhooks, private keys). Findings are redacted |
+| `-cors` | bool | `true` | Detect exploitable CORS misconfigurations by reflecting arbitrary/null/trusted-suffix origins against each live host (adds up to 3 GETs/host) |
 | `-wordlist` | string | `$HOME/bugbounty/wordlists/SecLists/Discovery/Web-Content/raft-medium-directories-lowercase.txt` | Wordlist used when `-fuzz` is enabled |
 | `-format` | string | `text` | Output format: `text`, `json`, or `csv` |
 | `-o` | string | *(stdout)* | Write structured results to file |
@@ -221,6 +223,15 @@ recongo -domain example.com -format json -o results.jsonl \
   | jq 'select(.secrets | length > 0) | {host: .asset.host, secrets: .secrets}'
 ```
 
+### CORS misconfiguration sweep (on by default)
+
+```bash
+# reflects evil.example / null / <host>.evil.example as Origin against each
+# live host; only exploitable reflections (not bare wildcard ACAO) are kept
+recongo -domain example.com -format json -o results.jsonl \
+  | jq 'select(.cors | length > 0) | {host: .asset.host, cors: .cors}'
+```
+
 ### DNS-only mode (no HTTP probe)
 
 ```bash
@@ -258,6 +269,9 @@ Each probed host emits one nested JSON object on stdout:
   "takeover_risk": false,
   "fuzz_results": [
     { "path": "/admin", "url": "https://api.example.com/admin", "status_code": 200, "content_length": 128, "kind": "directory" }
+  ],
+  "cors": [
+    { "sent_origin": "https://evil.example", "reflected_origin": "https://evil.example", "allow_credentials": true, "severity": "high", "note": "arbitrary origin reflection with credentials — full authenticated cross-origin read" }
   ]
 }
 ```
