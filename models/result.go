@@ -30,12 +30,32 @@ type Result struct {
 	CDNProvider        string   `json:"cdn_provider,omitempty"`
 	PotentialOriginIPs []string `json:"potential_origin_ips"`
 
-	// Takeover assessment.
-	TakeoverRisk  bool   `json:"takeover_risk,omitempty"`
-	TakeoverCNAME string `json:"takeover_cname,omitempty"`
+	// Takeover assessment. Confirmed=true means both the DNS signal (CNAME or
+	// A-record) and a live fingerprint check on the response body agreed;
+	// Confirmed=false with Risk=true means the DNS signal fired but couldn't
+	// be (or wasn't) verified against the live page — treat as a lead, not a
+	// report-ready finding.
+	TakeoverRisk      bool   `json:"takeover_risk,omitempty"`
+	TakeoverService   string `json:"takeover_service,omitempty"`
+	TakeoverCNAME     string `json:"takeover_cname,omitempty"`
+	TakeoverIP        string `json:"takeover_ip,omitempty"`
+	TakeoverConfirmed bool   `json:"takeover_confirmed,omitempty"`
 
 	// Exposed credential material found in HTML/JS bodies (optional -secrets).
 	Secrets []SecretFinding `json:"secrets"`
+
+	// Cross-origin misconfigurations found by reflecting attacker origins
+	// (optional -cors).
+	CORS []CORSFinding `json:"cors"`
+}
+
+// CORSFinding is a single confirmed CORS misconfiguration on a probed host.
+type CORSFinding struct {
+	SentOrigin       string `json:"sent_origin"`
+	Reflected        string `json:"reflected_origin"`
+	AllowCredentials bool   `json:"allow_credentials"`
+	Severity         string `json:"severity"`
+	Note             string `json:"note,omitempty"`
 }
 
 // SecretFinding is a redacted credential candidate detected in client code.

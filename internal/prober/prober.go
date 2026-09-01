@@ -3,12 +3,14 @@ package prober
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/Lost-illusion69/recongo/internal/cors"
 	"github.com/Lost-illusion69/recongo/internal/mmh3"
 	"github.com/Lost-illusion69/recongo/internal/origin"
 	recsecrets "github.com/Lost-illusion69/recongo/internal/secrets"
@@ -75,8 +77,46 @@ func Probe(host string, opts Options) (*models.Result, error) {
 		origin.EnrichResult(result, respHeader, opts.OriginFindings, true, fetch)
 	}
 
+	if opts.ScanCORS {
+		findings := cors.Check(ctx, baseURL.String(), host, corsProbeFunc(client, opts))
+		result.CORS = mapCORSFindings(findings)
+		if opts.Verbose && len(result.CORS) > 0 {
+			fmt.Fprintf(os.Stderr, "  [cors] %s: %d misconfiguration(s) found\n", host, len(result.CORS))
+		}
+	}
+
 	ensureSliceFields(result)
 	return result, nil
+}
+
+// FetchBody performs a best-effort GET (HTTPS then HTTP) against host and
+// returns the response body as text, independent of Probe's own request.
+// Used for auxiliary confirmatory checks that run after the main probe stage
+// (e.g. subdomain-takeover fingerprint verification).
+func FetchBody(host string, opts Options) (string, error) {
+	opts = opts.withDefaults()
+	client, err := newClient(opts)
+	if err != nil {
+		return "", err
+	}
+	for _, scheme := range []string{"https", "http"} {
+		req, err := http.NewRequest(http.MethodGet, scheme+"://"+host, nil)
+		if err != nil {
+			continue
+		}
+		applyHeaders(req, opts)
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		body, err := readLimitedBody(resp.Body, maxBodyBytes)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+		return string(body), nil
+	}
+	return "", fmt.Errorf("prober: fetch body failed for %s", host)
 }
 
 func doProbe(client *http.Client, opts Options, scheme, host string) (*models.Result, *url.URL, []byte, http.Header, error) {
@@ -184,6 +224,52 @@ func findIconHref(body []byte) string {
 	return ""
 }
 
+// corsProbeFunc adapts the shared HTTP client into a cors.ProbeFunc, sending
+// the candidate Origin header and reporting back the CORS-relevant response
+// headers. It reuses opts' headers/proxy/UA config so CORS probes look like
+// any other probe request.
+func corsProbeFunc(client *http.Client, opts Options) cors.ProbeFunc {
+	return func(ctx context.Context, target, origin string) (cors.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+		if err != nil {
+			return cors.Response{}, err
+		}
+		applyHeaders(req, opts)
+		req.Header.Set("Origin", origin)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return cors.Response{}, err
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBodyBytes))
+
+		return cors.Response{
+			StatusCode: resp.StatusCode,
+			ACAO:       resp.Header.Get("Access-Control-Allow-Origin"),
+			ACAC:       resp.Header.Get("Access-Control-Allow-Credentials"),
+		}, nil
+	}
+}
+
+// mapCORSFindings converts internal/cors findings to the shared model type.
+func mapCORSFindings(findings []cors.Finding) []models.CORSFinding {
+	if len(findings) == 0 {
+		return []models.CORSFinding{}
+	}
+	out := make([]models.CORSFinding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, models.CORSFinding{
+			SentOrigin:       f.SentOrigin,
+			Reflected:        f.Reflected,
+			AllowCredentials: f.AllowCredentials,
+			Severity:         string(f.Severity),
+			Note:             f.Note,
+		})
+	}
+	return out
+}
+
 func ensureSliceFields(r *models.Result) {
 	if r.Endpoints == nil {
 		r.Endpoints = []string{}
@@ -202,6 +288,9 @@ func ensureSliceFields(r *models.Result) {
 	}
 	if r.Secrets == nil {
 		r.Secrets = []models.SecretFinding{}
+	}
+	if r.CORS == nil {
+		r.CORS = []models.CORSFinding{}
 	}
 }
 

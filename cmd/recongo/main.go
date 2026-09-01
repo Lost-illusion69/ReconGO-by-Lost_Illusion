@@ -6,7 +6,7 @@
 //	  [-probe] [-mutate] [-cluster] [-fuzz] [-wordlist path] [-max-mutations 500] \
 //	  [-probe-workers 50] [-http-timeout 5s] [-o results.jsonl] [-format json] \
 //	  [-ext bak,old,swp] [-recursive] [-fuzz-depth 2] [-fuzz-401] \
-//	  [-secrets=true]
+//	  [-secrets=true] [-cors=true]
 //
 // The binary exits with code 0 on success, 1 on usage/config errors,
 // and 2 when terminated by signal.
@@ -82,6 +82,7 @@ type config struct {
 	fuzzDepth      int
 	fuzz401        bool
 	secrets        bool
+	cors           bool
 }
 
 func parseFlags(args []string) (*config, error) {
@@ -120,6 +121,7 @@ func parseFlags(args []string) (*config, error) {
 	fs.IntVar(&cfg.fuzzDepth, "fuzz-depth", 2, "Maximum recursive directory depth (with -recursive)")
 	fuzz401Flag := fs.Bool("fuzz-401", false, "Also fuzz web apps that answer HTTP 401 (auth-gated surfaces)")
 	secretsFlag := fs.Bool("secrets", true, "Scan fetched HTML/JS for exposed credentials (redacted findings)")
+	corsFlag := fs.Bool("cors", true, "Scan live hosts for exploitable CORS misconfigurations (arbitrary/null origin reflection)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -134,6 +136,7 @@ func parseFlags(args []string) (*config, error) {
 	cfg.recursive = *recursiveFlag
 	cfg.fuzz401 = *fuzz401Flag
 	cfg.secrets = *secretsFlag
+	cfg.cors = *corsFlag
 
 	for _, e := range strings.Split(cfg.fuzzExtRaw, ",") {
 		e = strings.TrimSpace(e)
@@ -355,6 +358,7 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 		Headers:        probeHeaders,
 		ProxyURL:       cfg.proxy,
 		ScanSecrets:    cfg.secrets,
+		ScanCORS:       cfg.cors,
 	}
 
 	// Stage 4: HTTP probe alive hosts.
@@ -376,11 +380,26 @@ func run(ctx context.Context, cfg *config, log *slog.Logger) error {
 				a.HistoricalURLs, a.DiscoveredParams = archive.FilterForHost(archiveFindings, a.Host)
 			}
 			if cfg.takeover {
-				risk, cname := origin.TakeoverRisk(ctx, a.Host, nil)
-				a.TakeoverRisk = risk
-				a.TakeoverCNAME = cname
-				if risk {
-					fmt.Fprintf(os.Stderr, "  [takeover] %-48s  CNAME → %s\n", a.Host, cname)
+				fetch := func(_ context.Context, target string) (string, error) {
+					return prober.FetchBody(target, probeOpts)
+				}
+				finding := origin.TakeoverRisk(ctx, a.Host, nil, fetch)
+				a.TakeoverRisk = finding.Risk
+				a.TakeoverService = finding.Service
+				a.TakeoverCNAME = finding.CNAME
+				a.TakeoverIP = finding.IP
+				a.TakeoverConfirmed = finding.Confirmed
+				if finding.Risk {
+					status := "unconfirmed — verify by hand"
+					if finding.Confirmed {
+						status = "CONFIRMED"
+					}
+					target := finding.CNAME
+					if target == "" {
+						target = finding.IP
+					}
+					fmt.Fprintf(os.Stderr, "  [takeover] %-40s %-16s -> %-30s [%s]\n",
+						a.Host, finding.Service, target, status)
 				}
 			}
 			if cfg.cluster {
@@ -577,6 +596,7 @@ func main() {
 		slog.Int("fuzz-depth", cfg.fuzzDepth),
 		slog.Bool("fuzz-401", cfg.fuzz401),
 		slog.Bool("secrets", cfg.secrets),
+		slog.Bool("cors", cfg.cors),
 	)
 	fmt.Fprintf(os.Stderr, "\n  ReconGO %s — discovery phase\n  Target: %s\n\n", version, cfg.domain)
 

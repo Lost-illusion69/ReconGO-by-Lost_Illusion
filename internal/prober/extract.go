@@ -33,6 +33,10 @@ type Options struct {
 	// ScanSecrets enables credential detection over fetched HTML/JS bodies.
 	// It adds no network requests (bodies are already in memory).
 	ScanSecrets bool
+	// ScanCORS enables cross-origin misconfiguration detection by reflecting
+	// a small set of attacker-controlled Origin headers against the host.
+	// Adds up to 3 extra GET requests per probed host.
+	ScanCORS bool
 }
 
 func (o Options) withDefaults() Options {
